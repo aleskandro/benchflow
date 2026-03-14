@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import argparse
 import logging
-import shutil
 import sys
 from typing import Iterable
 
@@ -11,7 +9,6 @@ try:
     from rich.logging import RichHandler
     from rich.panel import Panel
     from rich.table import Table
-    from rich_argparse import RichHelpFormatter as _RichHelpFormatter
 
     RICH_AVAILABLE = True
 except ImportError:  # pragma: no cover - fallback for bootstrap environments
@@ -19,18 +16,7 @@ except ImportError:  # pragma: no cover - fallback for bootstrap environments
     RichHandler = None
     Panel = None
     Table = None
-    _RichHelpFormatter = argparse.RawDescriptionHelpFormatter
     RICH_AVAILABLE = False
-
-
-def _help_width() -> int:
-    width = shutil.get_terminal_size((100, 24)).columns
-    return max(88, min(width, 120))
-
-
-class HelpFormatter(_RichHelpFormatter):
-    def __init__(self, prog: str) -> None:
-        super().__init__(prog, max_help_position=28, width=_help_width())
 
 
 _console = (

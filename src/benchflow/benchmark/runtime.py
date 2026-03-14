@@ -1,4 +1,3 @@
-import argparse
 import json
 import logging
 import subprocess
@@ -10,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
+import click
 import mlflow
 
 from ..ui import configure_logging, emit
@@ -1296,285 +1296,418 @@ def generate_plot_only_report(
         return None
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="GuideLLM Benchmark with MLflow Logging",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument("--target", help="Target URL (required for benchmark mode)")
-    parser.add_argument("--model", help="Model name (required for benchmark mode)")
-    parser.add_argument("--backend-type", default="openai_http", help="Backend type")
-    parser.add_argument("--rate-type", default="concurrent", help="Rate type")
-    parser.add_argument(
-        "--rate", help="Rate value(s), comma-separated (required for benchmark mode)"
-    )
-    parser.add_argument(
-        "--data", help="Data config (e.g., 'prompt_tokens=1000,output_tokens=1000')"
-    )
-    parser.add_argument(
-        "--max-seconds",
-        help="Max duration in seconds (supports expressions in MULTITURN mode)",
-    )
-    parser.add_argument(
-        "--max-requests",
-        help="Max number of requests (supports expressions like '10*concurrency' in MULTITURN mode)",
-    )
-    parser.add_argument("--processor", help="Processor/tokenizer name")
-
-    parser.add_argument("--accelerator", help="Accelerator type (e.g., H200, A100)")
-    parser.add_argument(
-        "--version", help="Version identifier for visualization reports"
-    )
-    parser.add_argument(
-        "--tp",
-        type=int,
-        default=1,
-        help="Tensor parallelism size for visualization reports",
-    )
-    parser.add_argument(
-        "--runtime-args", default="", help="Runtime arguments for visualization reports"
-    )
-
-    # Replica configuration parameters
-    parser.add_argument(
-        "--replicas",
-        default="N/A",
-        help="Number of replicas for standard deployment mode",
-    )
-    parser.add_argument(
-        "--prefill-replicas",
-        default="N/A",
-        help="Number of prefill worker replicas for P/D disaggregation",
-    )
-    parser.add_argument(
-        "--decode-replicas",
-        default="N/A",
-        help="Number of decode worker replicas for P/D disaggregation",
-    )
-
-    parser.add_argument(
-        "--experiment-name",
-        default="guidellm-benchmarks",
-        help="MLflow experiment name",
-    )
-    parser.add_argument(
-        "--mlflow-tracking-uri",
-        default=os.environ.get("MLFLOW_TRACKING_URI"),
-        help="MLflow tracking URI (defaults to MLFLOW_TRACKING_URI environment variable)",
-    )
-    parser.add_argument(
-        "--tag", action="append", dest="tags", help="Additional tags (key=value)"
-    )
-
-    # Plot-only mode arguments
-    parser.add_argument(
-        "--plot-only",
-        action="store_true",
-        help="Generate plots from existing MLflow runs without running benchmarks",
-    )
-    parser.add_argument(
-        "--mlflow-run-ids",
-        help="Comma-separated list of MLflow run IDs to plot (required with --plot-only)",
-    )
-    parser.add_argument(
-        "--versions",
-        help="Comma-separated list of versions to compare (filters runs and sets compare_versions)",
-    )
-    parser.add_argument(
-        "--versions-override",
-        action="append",
-        dest="versions_override",
-        help="Version rename mappings (old_name=new_name). Renames version labels after filtering but before plotting. Can be specified multiple times. Only applies to --plot-only mode.",
-    )
-    parser.add_argument(
-        "--additional-csv",
-        action="append",
-        dest="additional_csv_files",
-        help="Additional CSV file(s) to include in comparison plots (only for --plot-only mode). Can be specified multiple times.",
-    )
-
-    args = parser.parse_args()
-
-    # Handle plot-only mode
-    if args.plot_only:
-        logger.info("Plot-only mode enabled")
-
-        # Validate required arguments for plot-only mode
-        if not args.mlflow_run_ids:
-            parser.error("--mlflow-run-ids is required when using --plot-only")
-
-        # Validate additional CSV files if provided
-        if args.additional_csv_files:
-            logger.info(
-                f"Will include {len(args.additional_csv_files)} additional CSV file(s)"
+def _parse_tag_mappings(tags: tuple[str, ...]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for tag in tags:
+        if "=" not in tag:
+            raise click.BadParameter(
+                f"invalid tag format: {tag}. Expected format: key=value",
+                param_hint="--tag",
             )
-            for csv_file in args.additional_csv_files:
-                if not Path(csv_file).exists():
-                    parser.error(f"Additional CSV file not found: {csv_file}")
+        key, value = tag.split("=", 1)
+        parsed[key.strip()] = value.strip()
+    return parsed
 
-        # Parse run IDs and versions
-        run_ids = [rid.strip() for rid in args.mlflow_run_ids.split(",") if rid.strip()]
-        versions = (
-            [v.strip() for v in args.versions.split(",") if v.strip()]
-            if args.versions
-            else None
+
+def _parse_version_overrides(values: tuple[str, ...]) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for mapping in values:
+        if "=" not in mapping:
+            raise click.BadParameter(
+                f"invalid version override format: {mapping}. Expected format: old_name=new_name",
+                param_hint="--versions-override",
+            )
+        old_version, new_version = mapping.split("=", 1)
+        old_version = old_version.strip()
+        new_version = new_version.strip()
+        overrides[old_version] = new_version
+        logger.info(f"  Will rename: {old_version} → {new_version}")
+    return overrides
+
+
+def _authenticate_huggingface_if_needed() -> None:
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        return
+    try:
+        from huggingface_hub import login as hf_login
+
+        hf_login(
+            token=hf_token,
+            add_to_git_credential=False,
+            skip_if_logged_in=True,
         )
+        logger.info("Successfully authenticated with HuggingFace")
+    except Exception as exc:
+        logger.warning(
+            "Python Hugging Face login failed (%s); trying CLI fallback",
+            exc,
+        )
+        if shutil.which("hf"):
+            hf_cmd = ["hf", "auth", "login", "--token", hf_token]
+        elif shutil.which("huggingface-cli"):
+            hf_cmd = ["huggingface-cli", "login", "--token", hf_token]
+        else:
+            raise RuntimeError(
+                "HF_TOKEN is set but no Hugging Face login method is available"
+            ) from exc
 
-        # Parse version override mappings
-        versions_override = {}
-        if args.versions_override:
-            logger.info(f"Parsing {len(args.versions_override)} version override(s)")
-            for mapping in args.versions_override:
-                if "=" not in mapping:
-                    parser.error(
-                        f"Invalid version override format: {mapping}. Expected format: old_name=new_name"
-                    )
-                old_version, new_version = mapping.split("=", 1)
-                old_version = old_version.strip()
-                new_version = new_version.strip()
-                versions_override[old_version] = new_version
-                logger.info(f"  Will rename: {old_version} → {new_version}")
+        subprocess.run(
+            hf_cmd,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        logger.info("Successfully authenticated with HuggingFace")
 
-        logger.info(f"Fetching {len(run_ids)} MLflow runs...")
 
-        try:
-            # Fetch runs from MLflow
-            runs_data = fetch_mlflow_runs(run_ids, args.mlflow_tracking_uri)
+def _run_plot_only_mode(
+    *,
+    mlflow_run_ids: str,
+    versions: str | None,
+    mlflow_tracking_uri: str | None,
+    additional_csv_files: tuple[str, ...],
+    versions_override_values: tuple[str, ...],
+) -> int:
+    logger.info("Plot-only mode enabled")
 
-            if not runs_data:
-                logger.error("No runs fetched successfully")
-                return 1
+    if additional_csv_files:
+        logger.info(f"Will include {len(additional_csv_files)} additional CSV file(s)")
+        for csv_file in additional_csv_files:
+            if not Path(csv_file).exists():
+                raise click.BadParameter(
+                    f"additional CSV file not found: {csv_file}",
+                    param_hint="--additional-csv",
+                )
 
-            # Generate plot-only report
-            html_report = generate_plot_only_report(
-                runs_data=runs_data,
-                versions=versions,
-                mlflow_tracking_uri=args.mlflow_tracking_uri,
-                additional_csv_files=args.additional_csv_files,
-                versions_override=versions_override,
-            )
+    run_ids = [rid.strip() for rid in mlflow_run_ids.split(",") if rid.strip()]
+    versions_list = (
+        [v.strip() for v in versions.split(",") if v.strip()] if versions else None
+    )
 
-            if html_report:
-                logger.info("\nPlot generation completed successfully.")
-                logger.info(f"  Report saved to: {html_report}")
-                return 0
-            else:
-                logger.error("Plot generation failed")
-                return 1
+    versions_override = {}
+    if versions_override_values:
+        logger.info(f"Parsing {len(versions_override_values)} version override(s)")
+        versions_override = _parse_version_overrides(versions_override_values)
 
-        except Exception as e:
-            logger.error(f"Plot generation failed: {e}", exc_info=True)
+    logger.info(f"Fetching {len(run_ids)} MLflow runs...")
+
+    try:
+        runs_data = fetch_mlflow_runs(run_ids, mlflow_tracking_uri)
+
+        if not runs_data:
+            logger.error("No runs fetched successfully")
             return 1
 
-    # Validate required arguments for benchmark mode
-    if not args.target:
-        parser.error("--target is required for benchmark mode")
-    if not args.model:
-        parser.error("--model is required for benchmark mode")
-    if not args.rate:
-        parser.error("--rate is required for benchmark mode")
+        html_report = generate_plot_only_report(
+            runs_data=runs_data,
+            versions=versions_list,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            additional_csv_files=list(additional_csv_files) or None,
+            versions_override=versions_override,
+        )
 
-    tags = {}
-    if args.tags:
-        for tag in args.tags:
-            key, value = tag.split("=", 1)
-            tags[key.strip()] = value.strip()
+        if html_report:
+            logger.info("\nPlot generation completed successfully.")
+            logger.info(f"  Report saved to: {html_report}")
+            return 0
+        logger.error("Plot generation failed")
+        return 1
+    except Exception as exc:
+        logger.error(f"Plot generation failed: {exc}", exc_info=True)
+        return 1
 
-    logger.info(f"Starting benchmark sweep for rates: {args.rate}")
 
-    # Log in to HF
-    hf_token = os.environ.get("HF_TOKEN")
-    if hf_token:
-        try:
-            from huggingface_hub import login as hf_login
+def _run_benchmark_mode(
+    *,
+    target: str,
+    model: str,
+    backend_type: str,
+    rate_type: str,
+    rate: str,
+    data: str | None,
+    max_seconds: str | None,
+    max_requests: str | None,
+    processor: str | None,
+    accelerator: str | None,
+    version: str | None,
+    tp: int,
+    runtime_args: str,
+    experiment_name: str,
+    mlflow_tracking_uri: str | None,
+    tags: tuple[str, ...],
+    replicas: str,
+    prefill_replicas: str,
+    decode_replicas: str,
+) -> int:
+    parsed_tags = _parse_tag_mappings(tags)
+    logger.info(f"Starting benchmark sweep for rates: {rate}")
+    _authenticate_huggingface_if_needed()
 
-            hf_login(
-                token=hf_token,
-                add_to_git_credential=False,
-                skip_if_logged_in=True,
-            )
-            logger.info("Successfully authenticated with HuggingFace")
-        except Exception as exc:
-            logger.warning(
-                "Python Hugging Face login failed (%s); trying CLI fallback",
-                exc,
-            )
-            if shutil.which("hf"):
-                hf_cmd = ["hf", "auth", "login", "--token", hf_token]
-            elif shutil.which("huggingface-cli"):
-                hf_cmd = ["huggingface-cli", "login", "--token", hf_token]
-            else:
-                raise RuntimeError(
-                    "HF_TOKEN is set but no Hugging Face login method is available"
-                ) from exc
-
-            subprocess.run(
-                hf_cmd,
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
-            logger.info("Successfully authenticated with HuggingFace")
-
-    # Check if MLflow is enabled via environment variable
     mlflow_enabled = os.environ.get("MLFLOW_ENABLED", "false").lower() == "true"
 
     if not mlflow_enabled:
         logger.info("MLflow tracking disabled - running benchmark without MLflow")
         try:
             json_path = run_benchmark_without_mlflow(
-                target=args.target,
-                model=args.model,
-                rate=args.rate,
-                backend_type=args.backend_type,
-                rate_type=args.rate_type,
-                data=args.data,
-                max_seconds=args.max_seconds,
-                max_requests=args.max_requests,
-                processor=args.processor,
+                target=target,
+                model=model,
+                rate=rate,
+                backend_type=backend_type,
+                rate_type=rate_type,
+                data=data,
+                max_seconds=max_seconds,
+                max_requests=max_requests,
+                processor=processor,
                 output_dir="/benchmark-results",
-                accelerator=args.accelerator,
-                version=args.version,
-                tp_size=args.tp,
-                runtime_args=args.runtime_args,
+                accelerator=accelerator,
+                version=version,
+                tp_size=tp,
+                runtime_args=runtime_args,
             )
             logger.info("\nBenchmark completed successfully.")
             logger.info(f"  Results saved to: {json_path}")
             return 0
-        except Exception as e:
-            logger.error(f"Benchmark failed: {e}")
+        except Exception as exc:
+            logger.error(f"Benchmark failed: {exc}")
             return 1
 
     logger.info("MLflow tracking enabled")
     try:
         run_id = run_benchmark_with_mlflow(
-            target=args.target,
-            model=args.model,
-            rate=args.rate,
-            backend_type=args.backend_type,
-            rate_type=args.rate_type,
-            data=args.data,
-            max_seconds=args.max_seconds,
-            max_requests=args.max_requests,
-            processor=args.processor,
-            accelerator=args.accelerator,
-            experiment_name=args.experiment_name,
-            mlflow_tracking_uri=args.mlflow_tracking_uri,
-            tags=tags,
-            version=args.version,
-            tp_size=args.tp,
-            runtime_args=args.runtime_args,
-            replicas=args.replicas,
-            prefill_replicas=args.prefill_replicas,
-            decode_replicas=args.decode_replicas,
+            target=target,
+            model=model,
+            rate=rate,
+            backend_type=backend_type,
+            rate_type=rate_type,
+            data=data,
+            max_seconds=max_seconds,
+            max_requests=max_requests,
+            processor=processor,
+            accelerator=accelerator,
+            experiment_name=experiment_name,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            tags=parsed_tags,
+            version=version,
+            tp_size=tp,
+            runtime_args=runtime_args,
+            replicas=replicas,
+            prefill_replicas=prefill_replicas,
+            decode_replicas=decode_replicas,
         )
         logger.info("\nBenchmark sweep completed successfully.")
         logger.info(f"  MLflow Run ID: {run_id}")
         return 0
-    except Exception as e:
-        logger.error(f"Benchmark sweep failed: {e}")
+    except Exception as exc:
+        logger.error(f"Benchmark sweep failed: {exc}")
         return 1
+
+
+@click.command(
+    help=(
+        "Run a GuideLLM benchmark with optional MLflow logging, or generate "
+        "comparison reports from existing MLflow runs."
+    )
+)
+@click.option("--target", help="Target URL. Required for benchmark mode.")
+@click.option("--model", help="Model name. Required for benchmark mode.")
+@click.option(
+    "--backend-type",
+    default="openai_http",
+    show_default=True,
+    help="Backend type.",
+)
+@click.option(
+    "--rate-type",
+    default="concurrent",
+    show_default=True,
+    help="Rate type.",
+)
+@click.option(
+    "--rate",
+    help="Rate value(s), comma-separated. Required for benchmark mode.",
+)
+@click.option(
+    "--data",
+    help="Data config, for example prompt_tokens=1000,output_tokens=1000.",
+)
+@click.option(
+    "--max-seconds",
+    help="Max duration in seconds. Supports expressions in multiturn mode.",
+)
+@click.option(
+    "--max-requests",
+    help="Max requests. Supports expressions like 10*concurrency in multiturn mode.",
+)
+@click.option("--processor", help="Processor or tokenizer name.")
+@click.option("--accelerator", help="Accelerator type, for example H200 or A100.")
+@click.option("--version", help="Version identifier for visualization reports.")
+@click.option(
+    "--tp",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Tensor parallelism size for visualization reports.",
+)
+@click.option(
+    "--runtime-args",
+    default="",
+    show_default=True,
+    help="Runtime arguments for visualization reports.",
+)
+@click.option(
+    "--replicas",
+    default="N/A",
+    show_default=True,
+    help="Replica count for standard deployment mode.",
+)
+@click.option(
+    "--prefill-replicas",
+    default="N/A",
+    show_default=True,
+    help="Prefill worker replica count for P/D disaggregation.",
+)
+@click.option(
+    "--decode-replicas",
+    default="N/A",
+    show_default=True,
+    help="Decode worker replica count for P/D disaggregation.",
+)
+@click.option(
+    "--experiment-name",
+    default="guidellm-benchmarks",
+    show_default=True,
+    help="MLflow experiment name.",
+)
+@click.option(
+    "--mlflow-tracking-uri",
+    default=lambda: os.environ.get("MLFLOW_TRACKING_URI"),
+    show_default="env MLFLOW_TRACKING_URI",
+    help="MLflow tracking URI.",
+)
+@click.option(
+    "--tag",
+    "tags",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Additional MLflow tag. Repeat to set multiple tags.",
+)
+@click.option(
+    "--plot-only",
+    is_flag=True,
+    help="Generate plots from existing MLflow runs without running benchmarks.",
+)
+@click.option(
+    "--mlflow-run-ids",
+    help="Comma-separated list of MLflow run IDs to plot. Required with --plot-only.",
+)
+@click.option(
+    "--versions",
+    help="Comma-separated versions to compare. Filters runs and sets compare_versions.",
+)
+@click.option(
+    "--versions-override",
+    "versions_override_values",
+    multiple=True,
+    metavar="OLD=NEW",
+    help=(
+        "Version rename mapping applied after filtering but before plotting. "
+        "Repeat to set multiple mappings. Only for --plot-only mode."
+    ),
+)
+@click.option(
+    "--additional-csv",
+    "additional_csv_files",
+    multiple=True,
+    metavar="PATH",
+    help=(
+        "Additional CSV file to include in comparison plots. "
+        "Repeat to set multiple files. Only for --plot-only mode."
+    ),
+)
+def cli(
+    target: str | None,
+    model: str | None,
+    backend_type: str,
+    rate_type: str,
+    rate: str | None,
+    data: str | None,
+    max_seconds: str | None,
+    max_requests: str | None,
+    processor: str | None,
+    accelerator: str | None,
+    version: str | None,
+    tp: int,
+    runtime_args: str,
+    replicas: str,
+    prefill_replicas: str,
+    decode_replicas: str,
+    experiment_name: str,
+    mlflow_tracking_uri: str | None,
+    tags: tuple[str, ...],
+    plot_only: bool,
+    mlflow_run_ids: str | None,
+    versions: str | None,
+    versions_override_values: tuple[str, ...],
+    additional_csv_files: tuple[str, ...],
+) -> int:
+    if plot_only:
+        if not mlflow_run_ids:
+            raise click.UsageError(
+                "--mlflow-run-ids is required when using --plot-only"
+            )
+        return _run_plot_only_mode(
+            mlflow_run_ids=mlflow_run_ids,
+            versions=versions,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            additional_csv_files=additional_csv_files,
+            versions_override_values=versions_override_values,
+        )
+
+    missing = []
+    if not target:
+        missing.append("--target")
+    if not model:
+        missing.append("--model")
+    if not rate:
+        missing.append("--rate")
+    if missing:
+        raise click.UsageError(
+            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} required for benchmark mode"
+        )
+
+    return _run_benchmark_mode(
+        target=target,
+        model=model,
+        backend_type=backend_type,
+        rate_type=rate_type,
+        rate=rate,
+        data=data,
+        max_seconds=max_seconds,
+        max_requests=max_requests,
+        processor=processor,
+        accelerator=accelerator,
+        version=version,
+        tp=tp,
+        runtime_args=runtime_args,
+        experiment_name=experiment_name,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        tags=tags,
+        replicas=replicas,
+        prefill_replicas=prefill_replicas,
+        decode_replicas=decode_replicas,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        result = cli.main(
+            args=argv, prog_name="guidellm-runtime", standalone_mode=False
+        )
+    except click.ClickException as exc:
+        exc.show()
+        return exc.exit_code
+    return int(result or 0)
 
 
 if __name__ == "__main__":

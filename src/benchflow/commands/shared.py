@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Callable
 
+import click
 import yaml
+from click.shell_completion import CompletionItem
 
 from ..cluster import discover_repo_root
 from ..execution import load_run_plan_from_sources
@@ -25,7 +28,6 @@ from ..models import (
     sanitize_name,
 )
 from ..plans import resolve_run_plan
-from ..ui import HelpFormatter
 
 
 def dump_yaml(data) -> str:
@@ -36,6 +38,12 @@ def dump(data, output_format: str) -> str:
     if output_format == "json":
         return json.dumps(data, indent=2, sort_keys=True)
     return dump_yaml(data)
+
+
+def invoke_handler(
+    handler: Callable[[argparse.Namespace], int], **kwargs: object
+) -> int:
+    return handler(argparse.Namespace(**kwargs))
 
 
 def repo_root_from(args: argparse.Namespace) -> Path:
@@ -50,7 +58,9 @@ def profiles_dir_from(args: argparse.Namespace) -> Path:
     return repo_root_from(args) / "profiles"
 
 
-def parse_mapping(values: list[str] | None, option_name: str) -> dict[str, str]:
+def parse_mapping(
+    values: list[str] | tuple[str, ...] | None, option_name: str
+) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for value in values or []:
         if "=" not in value:
@@ -65,7 +75,9 @@ def parse_mapping(values: list[str] | None, option_name: str) -> dict[str, str]:
     return parsed
 
 
-def parse_version_overrides(values: list[str] | None) -> dict[str, str]:
+def parse_version_overrides(
+    values: list[str] | tuple[str, ...] | None,
+) -> dict[str, str]:
     return parse_mapping(values, "--version-override")
 
 
@@ -193,107 +205,163 @@ def load_runtime_plan(args: argparse.Namespace):
     return load_plan(args)
 
 
-def add_profile_source_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--repo-root",
-        help="BenchFlow repository root. Defaults to the current checkout.",
-    )
-    parser.add_argument(
-        "--profiles-dir",
-        help="Profiles directory. Defaults to <repo-root>/profiles.",
-    )
+def _completion_repo_root(ctx: click.Context) -> Path:
+    repo_root = ctx.params.get("repo_root")
+    if repo_root:
+        return Path(repo_root).resolve()
+    return discover_repo_root(Path.cwd())
 
 
-def add_experiment_input_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "experiment",
-        nargs="?",
-        help="Experiment file to load. If omitted, define the experiment entirely with flags.",
-    )
-    parser.add_argument(
-        "--repo-root",
-        help="BenchFlow repository root. Defaults to the current checkout.",
-    )
-    parser.add_argument(
-        "--profiles-dir",
-        help="Profiles directory. Defaults to <repo-root>/profiles.",
-    )
-    parser.add_argument("--namespace", help="Target namespace for the run.")
-    parser.add_argument("--name", help="Experiment name override.")
-    parser.add_argument(
-        "--label",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Experiment label override. Repeat to set multiple labels.",
-    )
-    parser.add_argument(
-        "--model", help="Model identifier, for example Qwen/Qwen3-0.6B."
-    )
-    parser.add_argument("--model-revision", help="Model revision or tag.")
-    parser.add_argument("--deployment-profile", help="Deployment profile name.")
-    parser.add_argument("--benchmark-profile", help="Benchmark profile name.")
-    parser.add_argument("--metrics-profile", help="Metrics profile name.")
-    parser.add_argument(
-        "--service-account", help="Service account used by the PipelineRun."
-    )
-    parser.add_argument(
-        "--ttl-seconds-after-finished",
-        type=int,
-        help="TTL for finished PipelineRuns.",
-    )
-    parser.add_argument("--mlflow-experiment", help="MLflow experiment name override.")
-    parser.add_argument(
-        "--mlflow-tag",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="MLflow tag override. Repeat to set multiple tags.",
-    )
-    for stage_name in ("download", "deploy", "benchmark", "collect", "cleanup"):
-        parser.add_argument(
-            f"--{stage_name}",
-            dest=f"stage_{stage_name}",
-            action=argparse.BooleanOptionalAction,
-            default=None,
-            help=f"Enable or disable the {stage_name} stage.",
+def _completion_profiles_dir(ctx: click.Context) -> Path:
+    profiles_dir = ctx.params.get("profiles_dir")
+    if profiles_dir:
+        return Path(profiles_dir).resolve()
+    return _completion_repo_root(ctx) / "profiles"
+
+
+def complete_profile_names(
+    kind: str | None = None,
+) -> Callable[[click.Context, click.Parameter, str], list[CompletionItem]]:
+    def _complete(
+        ctx: click.Context, param: click.Parameter, incomplete: str
+    ) -> list[CompletionItem]:
+        profiles_dir = _completion_profiles_dir(ctx)
+        names = sorted(
+            {
+                entry.name
+                for entry in list_profile_entries(profiles_dir)
+                if kind in (None, entry.kind)
+            }
         )
-
-
-def add_run_plan_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--run-plan-file",
-        help="Path to a pre-resolved RunPlan file.",
-    )
-    parser.add_argument(
-        "--run-plan-json",
-        help="Inline RunPlan JSON payload.",
-    )
-
-
-def add_parser(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-    name: str,
-    *,
-    help_text: str | None = None,
-    description: str | None = None,
-    add_help: bool = True,
-    hidden: bool = False,
-) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
-        name,
-        help=argparse.SUPPRESS if hidden else help_text,
-        description=description,
-        formatter_class=HelpFormatter,
-        add_help=add_help,
-    )
-    if hidden:
-        subparsers._choices_actions = [  # type: ignore[attr-defined]
-            action
-            for action in subparsers._choices_actions  # type: ignore[attr-defined]
-            if getattr(action, "dest", None) != name
+        return [
+            CompletionItem(name)
+            for name in names
+            if not incomplete or name.startswith(incomplete)
         ]
-    return parser
+
+    return _complete
+
+
+def apply_click_options(
+    decorators: list[Callable[[Callable[..., object]], Callable[..., object]]],
+) -> Callable[[Callable[..., object]], Callable[..., object]]:
+    def _decorate(func: Callable[..., object]) -> Callable[..., object]:
+        for decorator in reversed(decorators):
+            func = decorator(func)
+        return func
+
+    return _decorate
+
+
+def profile_source_options(func: Callable[..., object]) -> Callable[..., object]:
+    return apply_click_options(
+        [
+            click.option(
+                "--repo-root",
+                type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+                help="BenchFlow repository root. Defaults to the current checkout.",
+            ),
+            click.option(
+                "--profiles-dir",
+                type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+                help="Profiles directory. Defaults to <repo-root>/profiles.",
+            ),
+        ]
+    )(func)
+
+
+def experiment_input_options(func: Callable[..., object]) -> Callable[..., object]:
+    decorators: list[Callable[[Callable[..., object]], Callable[..., object]]] = [
+        click.argument(
+            "experiment",
+            required=False,
+            type=click.Path(dir_okay=False, path_type=Path),
+        ),
+        click.option(
+            "--repo-root",
+            type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+            help="BenchFlow repository root. Defaults to the current checkout.",
+        ),
+        click.option(
+            "--profiles-dir",
+            type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+            help="Profiles directory. Defaults to <repo-root>/profiles.",
+        ),
+        click.option("--namespace", help="Target namespace for the run."),
+        click.option("--name", help="Experiment name override."),
+        click.option(
+            "--label",
+            multiple=True,
+            metavar="KEY=VALUE",
+            help="Experiment label override. Repeat to set multiple labels.",
+        ),
+        click.option(
+            "--model",
+            help="Model identifier, for example Qwen/Qwen3-0.6B.",
+        ),
+        click.option("--model-revision", help="Model revision or tag."),
+        click.option(
+            "--deployment-profile",
+            shell_complete=complete_profile_names("deployment"),
+            help="Deployment profile name.",
+        ),
+        click.option(
+            "--benchmark-profile",
+            shell_complete=complete_profile_names("benchmark"),
+            help="Benchmark profile name.",
+        ),
+        click.option(
+            "--metrics-profile",
+            shell_complete=complete_profile_names("metrics"),
+            help="Metrics profile name.",
+        ),
+        click.option(
+            "--service-account",
+            help="Service account used by the PipelineRun.",
+        ),
+        click.option(
+            "--ttl-seconds-after-finished",
+            type=int,
+            help="TTL for finished PipelineRuns.",
+        ),
+        click.option(
+            "--mlflow-experiment",
+            help="MLflow experiment name override.",
+        ),
+        click.option(
+            "--mlflow-tag",
+            multiple=True,
+            metavar="KEY=VALUE",
+            help="MLflow tag override. Repeat to set multiple tags.",
+        ),
+    ]
+    for stage_name in ("download", "deploy", "benchmark", "collect", "cleanup"):
+        decorators.append(
+            click.option(
+                f"--{stage_name}/--no-{stage_name}",
+                f"stage_{stage_name}",
+                default=None,
+                show_default=False,
+                help=f"Enable or disable the {stage_name} stage.",
+            )
+        )
+    return apply_click_options(decorators)(func)
+
+
+def runtime_plan_source_options(func: Callable[..., object]) -> Callable[..., object]:
+    return apply_click_options(
+        [
+            click.option(
+                "--run-plan-file",
+                type=click.Path(dir_okay=False, path_type=Path),
+                help="Path to a pre-resolved RunPlan file.",
+            ),
+            click.option(
+                "--run-plan-json",
+                help="Inline RunPlan JSON payload.",
+            ),
+        ]
+    )(experiment_input_options(func))
 
 
 def format_profile_list(entries: list[dict[str, object]]) -> str:
@@ -358,16 +426,12 @@ def load_profile_document(profiles_dir: Path, name: str, kind: str | None) -> di
         for entry in entries
         if entry.name == name and (kind is None or entry.kind == kind)
     ]
-
     if not matches:
-        if kind is None:
-            raise ValidationError(f"unknown profile: {name}")
-        raise ValidationError(f"unknown {kind} profile: {name}")
-
+        kind_label = kind or "any"
+        raise ValidationError(f"no {kind_label} profile named {name!r}")
     if len(matches) > 1:
-        matched_kinds = ", ".join(sorted(entry.kind for entry in matches))
+        kinds = ", ".join(sorted(entry.kind for entry in matches))
         raise ValidationError(
-            f"profile name {name!r} is ambiguous across multiple kinds: {matched_kinds}; use --kind"
+            f"profile name {name!r} is ambiguous; specify --kind (matches: {kinds})"
         )
-
-    return load_yaml_file(profiles_dir / matches[0].path)
+    return load_yaml_file(Path(matches[0].path))

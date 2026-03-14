@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import click
+
 from ..cluster import (
     CommandError,
     cancel_pipelinerun,
@@ -16,65 +18,15 @@ from ..cluster import (
 from ..models import StageSpec
 from ..renderers.deployment import write_deployment_assets
 from ..renderers.tekton import render_pipelinerun
+from ..ui import detail, step, success
 from .shared import (
-    add_experiment_input_arguments,
-    add_parser,
     dump,
     dump_yaml,
+    experiment_input_options,
     format_experiment_list,
+    invoke_handler,
     load_plan,
 )
-from ..ui import detail, step, success
-
-
-EXPERIMENT_SUBCOMMANDS = (
-    "list",
-    "cancel",
-    "validate",
-    "resolve",
-    "render-pipelinerun",
-    "render-deployment",
-    "run",
-    "cleanup",
-)
-
-EXPERIMENT_OPTIONS = (
-    "--repo-root",
-    "--profiles-dir",
-    "--namespace",
-    "--name",
-    "--label",
-    "--model",
-    "--model-revision",
-    "--deployment-profile",
-    "--benchmark-profile",
-    "--metrics-profile",
-    "--service-account",
-    "--ttl-seconds-after-finished",
-    "--mlflow-experiment",
-    "--mlflow-tag",
-    "--download",
-    "--no-download",
-    "--deploy",
-    "--no-deploy",
-    "--benchmark",
-    "--no-benchmark",
-    "--collect",
-    "--no-collect",
-    "--cleanup",
-    "--no-cleanup",
-)
-
-EXPERIMENT_COMMAND_OPTIONS = {
-    "list": ("--namespace", "--all", "--format"),
-    "cancel": ("--namespace", "--all"),
-    "validate": EXPERIMENT_OPTIONS,
-    "resolve": (*EXPERIMENT_OPTIONS, "--format"),
-    "render-pipelinerun": (*EXPERIMENT_OPTIONS, "--pipeline-name"),
-    "render-deployment": (*EXPERIMENT_OPTIONS, "--output-dir"),
-    "run": (*EXPERIMENT_OPTIONS, "--pipeline-name", "--output", "--follow"),
-    "cleanup": (*EXPERIMENT_OPTIONS, "--pipeline-name", "--output", "--no-follow"),
-}
 
 
 def _namespace_from_args(args: argparse.Namespace) -> str:
@@ -230,158 +182,173 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
-def register_experiment_commands(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-    *,
-    hidden: bool = False,
-) -> None:
-    list_runs = add_parser(
-        subparsers,
-        "list",
-        help_text="List BenchFlow experiments in the cluster",
-        description="List BenchFlow PipelineRuns in a namespace. Active runs are shown by default.",
-        hidden=hidden,
-    )
-    list_runs.add_argument(
-        "--namespace",
-        help="Namespace to inspect. Defaults to the current oc project.",
-    )
-    list_runs.add_argument(
-        "--all",
-        dest="include_completed",
-        action="store_true",
-        help="Include finished PipelineRuns as well as active ones.",
-    )
-    list_runs.add_argument(
-        "--format",
-        choices=("table", "yaml", "json"),
-        default="table",
-        help="Output format.",
-    )
-    list_runs.set_defaults(func=cmd_list, include_completed=False)
+@click.group(
+    "experiment",
+    help="Validate, resolve, render, submit, or cancel BenchFlow experiments.",
+    short_help="Work with experiment definitions",
+)
+def experiment_group() -> None:
+    pass
 
-    cancel = add_parser(
-        subparsers,
-        "cancel",
-        help_text="Cancel a running BenchFlow experiment",
-        description=(
-            "Cancel a running BenchFlow PipelineRun by PipelineRun name or by "
-            "experiment name label."
-        ),
-        hidden=hidden,
-    )
-    cancel.add_argument(
-        "identifier",
-        help="PipelineRun name or experiment name to cancel.",
-    )
-    cancel.add_argument(
-        "--namespace",
-        help="Namespace that contains the PipelineRun. Defaults to the current oc project.",
-    )
-    cancel.add_argument(
-        "--all",
-        dest="all_matches",
-        action="store_true",
-        help="Cancel all active PipelineRuns that match the experiment name.",
-    )
-    cancel.set_defaults(func=cmd_cancel, all_matches=False)
 
-    validate = add_parser(
-        subparsers,
-        "validate",
-        help_text="Validate an experiment definition",
-        description="Validate an experiment file or CLI-defined experiment.",
-        hidden=hidden,
-    )
-    add_experiment_input_arguments(validate)
-    validate.set_defaults(func=cmd_validate)
+@experiment_group.command(
+    "list",
+    help="List BenchFlow PipelineRuns in a namespace. Active runs are shown by default.",
+    short_help="List experiments in the cluster",
+)
+@click.option(
+    "--namespace",
+    help="Namespace to inspect. Defaults to the current oc project.",
+)
+@click.option(
+    "--all",
+    "include_completed",
+    is_flag=True,
+    help="Include finished PipelineRuns as well as active ones.",
+)
+@click.option(
+    "--format",
+    "format",
+    type=click.Choice(("table", "yaml", "json")),
+    default="table",
+    show_default=True,
+    help="Output format.",
+)
+def experiment_list(**kwargs: object) -> int:
+    return invoke_handler(cmd_list, **kwargs)
 
-    resolve = add_parser(
-        subparsers,
-        "resolve",
-        help_text="Resolve profiles into a complete RunPlan",
-        description="Resolve an experiment into the fully expanded RunPlan used by BenchFlow.",
-        hidden=hidden,
-    )
-    add_experiment_input_arguments(resolve)
-    resolve.add_argument("--format", choices=("yaml", "json"), default="yaml")
-    resolve.set_defaults(func=cmd_resolve)
 
-    render_pr = add_parser(
-        subparsers,
-        "render-pipelinerun",
-        help_text="Render the Tekton PipelineRun manifest",
-        description="Render the Tekton PipelineRun that would be submitted for an experiment.",
-        hidden=hidden,
-    )
-    add_experiment_input_arguments(render_pr)
-    render_pr.add_argument(
-        "--pipeline-name",
-        default="benchflow-e2e",
-        help="Pipeline name to reference in the rendered PipelineRun.",
-    )
-    render_pr.set_defaults(func=cmd_render_pipelinerun)
+@experiment_group.command(
+    "cancel",
+    help=(
+        "Cancel a running BenchFlow PipelineRun by PipelineRun name or by "
+        "experiment name label."
+    ),
+    short_help="Cancel a running experiment",
+)
+@click.argument("identifier")
+@click.option(
+    "--namespace",
+    help="Namespace that contains the PipelineRun. Defaults to the current oc project.",
+)
+@click.option(
+    "--all",
+    "all_matches",
+    is_flag=True,
+    help="Cancel all active PipelineRuns that match the experiment name.",
+)
+def experiment_cancel(**kwargs: object) -> int:
+    return invoke_handler(cmd_cancel, **kwargs)
 
-    render_deployment = add_parser(
-        subparsers,
-        "render-deployment",
-        help_text="Render deployment manifests to disk",
-        description="Render deployment assets for an experiment without submitting a run.",
-        hidden=hidden,
-    )
-    add_experiment_input_arguments(render_deployment)
-    render_deployment.add_argument(
-        "--output-dir",
-        required=True,
-        help="Directory where the rendered deployment assets should be written.",
-    )
-    render_deployment.set_defaults(func=cmd_render_deployment)
 
-    run = add_parser(
-        subparsers,
-        "run",
-        help_text="Submit an experiment as a PipelineRun",
-        description="Submit an experiment to the cluster and optionally follow it.",
-        hidden=hidden,
-    )
-    add_experiment_input_arguments(run)
-    run.add_argument(
-        "--pipeline-name",
-        default="benchflow-e2e",
-        help="Pipeline name to reference when rendering the PipelineRun.",
-    )
-    run.add_argument(
-        "--output",
-        help="Write the rendered PipelineRun manifest to this file before submitting.",
-    )
-    run.add_argument(
-        "--follow",
-        action="store_true",
-        help="Follow the PipelineRun after submission.",
-    )
-    run.set_defaults(func=cmd_run, follow=False)
+@experiment_group.command(
+    "validate",
+    help="Validate an experiment file or CLI-defined experiment.",
+    short_help="Validate an experiment definition",
+)
+@experiment_input_options
+def experiment_validate(**kwargs: object) -> int:
+    return invoke_handler(cmd_validate, **kwargs)
 
-    cleanup = add_parser(
-        subparsers,
-        "cleanup",
-        help_text="Submit a cleanup-only PipelineRun",
-        description="Submit a cleanup-only run for an experiment.",
-        hidden=hidden,
-    )
-    add_experiment_input_arguments(cleanup)
-    cleanup.add_argument(
-        "--pipeline-name",
-        default="benchflow-e2e",
-        help="Pipeline name to reference when rendering the cleanup PipelineRun.",
-    )
-    cleanup.add_argument(
-        "--output",
-        help="Write the rendered cleanup PipelineRun manifest to this file before submitting.",
-    )
-    cleanup.add_argument(
-        "--no-follow",
-        dest="follow",
-        action="store_false",
-        help="Submit the cleanup PipelineRun without following it.",
-    )
-    cleanup.set_defaults(func=cmd_cleanup, follow=True)
+
+@experiment_group.command(
+    "resolve",
+    help="Resolve an experiment into the fully expanded RunPlan used by BenchFlow.",
+    short_help="Resolve profiles into a RunPlan",
+)
+@experiment_input_options
+@click.option(
+    "--format",
+    "format",
+    type=click.Choice(("yaml", "json")),
+    default="yaml",
+    show_default=True,
+    help="Output format.",
+)
+def experiment_resolve(**kwargs: object) -> int:
+    return invoke_handler(cmd_resolve, **kwargs)
+
+
+@experiment_group.command(
+    "render-pipelinerun",
+    help="Render the Tekton PipelineRun that would be submitted for an experiment.",
+    short_help="Render the PipelineRun manifest",
+)
+@experiment_input_options
+@click.option(
+    "--pipeline-name",
+    default="benchflow-e2e",
+    show_default=True,
+    help="Pipeline name to reference in the rendered PipelineRun.",
+)
+def experiment_render_pipelinerun(**kwargs: object) -> int:
+    return invoke_handler(cmd_render_pipelinerun, **kwargs)
+
+
+@experiment_group.command(
+    "render-deployment",
+    help="Render deployment assets for an experiment without submitting a run.",
+    short_help="Render deployment manifests to disk",
+)
+@experiment_input_options
+@click.option(
+    "--output-dir",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    help="Directory where the rendered deployment assets should be written.",
+)
+def experiment_render_deployment(**kwargs: object) -> int:
+    return invoke_handler(cmd_render_deployment, **kwargs)
+
+
+@experiment_group.command(
+    "run",
+    help="Submit an experiment to the cluster and optionally follow it.",
+    short_help="Submit an experiment as a PipelineRun",
+)
+@experiment_input_options
+@click.option(
+    "--pipeline-name",
+    default="benchflow-e2e",
+    show_default=True,
+    help="Pipeline name to reference when rendering the PipelineRun.",
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write the rendered PipelineRun manifest to this file before submitting.",
+)
+@click.option(
+    "--follow",
+    is_flag=True,
+    help="Follow the PipelineRun after submission.",
+)
+def experiment_run(**kwargs: object) -> int:
+    return invoke_handler(cmd_run, **kwargs)
+
+
+@experiment_group.command(
+    "cleanup",
+    help="Submit a cleanup-only run for an experiment.",
+    short_help="Submit a cleanup-only PipelineRun",
+)
+@experiment_input_options
+@click.option(
+    "--pipeline-name",
+    default="benchflow-e2e",
+    show_default=True,
+    help="Pipeline name to reference when rendering the cleanup PipelineRun.",
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write the rendered cleanup PipelineRun manifest to this file before submitting.",
+)
+@click.option(
+    "--follow/--no-follow",
+    default=True,
+    show_default=True,
+    help="Follow the cleanup PipelineRun after submission.",
+)
+def experiment_cleanup(**kwargs: object) -> int:
+    return invoke_handler(cmd_cleanup, **kwargs)
