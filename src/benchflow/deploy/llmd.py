@@ -60,7 +60,25 @@ def _cuda_visible_devices(tp: int) -> str:
 
 def _port_from_values(values: dict[str, Any]) -> int:
     try:
-        return int(values["decode"]["containers"][0]["ports"][0]["containerPort"])
+        container = values["decode"]["containers"][0]
+    except (KeyError, IndexError, TypeError):
+        return 8000
+
+    for probe_name in ("startupProbe", "readinessProbe", "livenessProbe"):
+        try:
+            return int(container[probe_name]["httpGet"]["port"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    try:
+        for port_spec in container.get("ports", []):
+            if port_spec.get("name") == "metrics":
+                return int(port_spec["containerPort"])
+    except (TypeError, ValueError, KeyError):
+        pass
+
+    try:
+        return int(container["ports"][0]["containerPort"])
     except (KeyError, IndexError, TypeError, ValueError):
         return 8000
 
