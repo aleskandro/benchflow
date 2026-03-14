@@ -1,47 +1,51 @@
 # BenchFlow
 
-BenchFlow runs end-to-end LLM inference benchmarks on OpenShift. It takes either an experiment file or direct CLI flags, resolves them into a single run plan, deploys the model, runs the benchmark, captures metrics and artifacts, and uploads the results to MLflow. The current implemented execution path is `llm-d`, using the `bflow` CLI locally and inside the Tekton tasks.
+[![Image build status](https://github.com/albertoperdomo2/benchflow/actions/workflows/build-images.yaml/badge.svg)](https://github.com/albertoperdomo2/benchflow/actions/workflows/build-images.yaml)
+
+BenchFlow is a control plane for repeatable LLM inference benchmarks on OpenShift. It turns an experiment file, or an equivalent set of CLI flags, into one resolved run plan, deploys the scenario, runs the benchmark, captures metrics and artifacts, and pushes the result to MLflow. The current implemented execution path is `llm-d`.
+
+The default runtime image is `ghcr.io/albertoperdomo2/benchflow/benchflow:latest`. The default namespace is `benchflow`.
+
+BenchFlow bootstraps the cluster resources it owns. That includes NFD, the NVIDIA GPU Operator, Tekton, Grafana, RBAC, PVCs, and the packaged Tekton tasks and pipelines. It does not implement `rhoai` or `rhaiis` execution yet, and it assumes an OpenShift cluster with cluster monitoring enabled and a reachable MLflow deployment backed by S3.
 
 ## Bootstrap
 
-Install the CLI locally from the repository root:
+Install the CLI from the repository root:
 
 ```bash
 pip install -e .
 ```
 
-Then bootstrap the cluster resources:
+Before bootstrapping the cluster, create the real secret manifests. BenchFlow reads `config/cluster/secrets/` and applies every `*.yaml` file there except `*.example.yaml`, so the intended flow is to copy the example files, fill in the real values, and keep the copied files alongside them:
+
+```bash
+cp config/cluster/secrets/huggingface-token.example.yaml config/cluster/secrets/huggingface-token.yaml
+cp config/cluster/secrets/mlflow-auth.example.yaml config/cluster/secrets/mlflow-auth.yaml
+cp config/cluster/secrets/mlflow-s3-creds.example.yaml config/cluster/secrets/mlflow-s3-creds.yaml
+```
+
+Then bootstrap the cluster:
 
 ```bash
 bflow bootstrap
 ```
 
-That installs or verifies Tekton, installs Grafana, creates the BenchFlow namespace, applies RBAC, provisions the PVCs, creates the Grafana route and dashboard, and installs the Tekton tasks and pipelines. After that, create the required secrets with your real values:
+## Run
 
-```bash
-oc apply -n benchflow -f config/cluster/secrets/huggingface-token.example.yaml
-oc apply -n benchflow -f config/cluster/secrets/mlflow-auth.example.yaml
-oc apply -n benchflow -f config/cluster/secrets/mlflow-s3-creds.example.yaml
-```
-
-## Run With An Experiment File
-
-The simplest path is to use the shipped smoke experiment:
+The narrow path is the shipped smoke experiment:
 
 ```bash
 bflow experiment validate experiments/smoke/qwen3-06b-llm-d-smoke.yaml
 bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml
 ```
 
-Then watch the PipelineRun:
+Then follow the PipelineRun:
 
 ```bash
 bflow watch <pipelinerun-name> --namespace benchflow
 ```
 
-## Run With CLI Flags
-
-The same run can be launched without an experiment file:
+The same run can be launched directly from flags:
 
 ```bash
 bflow experiment run \
@@ -50,12 +54,12 @@ bflow experiment run \
   --model-revision main \
   --deployment-profile llm-d-inference-scheduling \
   --benchmark-profile concurrent-1k-1k \
-  --metrics-profile default \
+  --metrics-profile detailed \
   --namespace benchflow \
   --mlflow-experiment benchflow-qwen
 ```
 
-If you want to inspect what is available before running, use:
+If you want to inspect the packaged profiles first:
 
 ```bash
 bflow profiles list
