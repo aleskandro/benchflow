@@ -17,7 +17,7 @@ from ..cluster import (
 )
 from ..models import StageSpec
 from ..renderers.deployment import write_deployment_assets
-from ..renderers.tekton import render_pipelinerun
+from ..renderers.tekton import render_matrix_pipelinerun, render_pipelinerun
 from ..ui import detail, step, success
 from .shared import (
     dump,
@@ -26,6 +26,7 @@ from .shared import (
     format_experiment_list,
     invoke_handler,
     load_plan,
+    load_plans,
 )
 
 
@@ -34,7 +35,7 @@ def _namespace_from_args(args: argparse.Namespace) -> str:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    load_plan(args)
+    load_plans(args)
     print("valid")
     return 0
 
@@ -106,14 +107,25 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 
 def cmd_resolve(args: argparse.Namespace) -> int:
-    plan = load_plan(args)
-    print(dump(plan.to_dict(), args.format))
+    plans = load_plans(args)
+    payload: object
+    if len(plans) == 1:
+        payload = plans[0].to_dict()
+    else:
+        payload = [plan.to_dict() for plan in plans]
+    print(dump(payload, args.format))
     return 0
 
 
 def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
-    plan = load_plan(args)
-    manifest = render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+    plans = load_plans(args)
+    if len(plans) == 1:
+        manifest = render_pipelinerun(plans[0], pipeline_name=args.pipeline_name)
+    else:
+        manifest = render_matrix_pipelinerun(
+            plans,
+            child_pipeline_name=args.pipeline_name,
+        )
     print(dump_yaml(manifest))
     return 0
 
@@ -130,7 +142,13 @@ def cmd_render_deployment(args: argparse.Namespace) -> int:
 def _render_manifest_yaml(
     args: argparse.Namespace, *, cleanup_only: bool = False
 ) -> tuple[object, str, str]:
-    plan = load_plan(args)
+    plans = load_plans(args)
+    if cleanup_only and len(plans) != 1:
+        raise CommandError(
+            "cleanup only supports a single profile combination; "
+            "use a single-profile experiment or override the profiles on the CLI"
+        )
+    plan = plans[0]
     if cleanup_only:
         plan.stages = StageSpec(
             download=False,
@@ -140,10 +158,17 @@ def _render_manifest_yaml(
             cleanup=True,
         )
 
-    manifest = render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+    if len(plans) == 1:
+        manifest = render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+        namespace = plan.deployment.namespace
+    else:
+        manifest = render_matrix_pipelinerun(
+            plans,
+            child_pipeline_name=args.pipeline_name,
+        )
+        namespace = plan.deployment.namespace
     manifest_yaml = dump_yaml(manifest)
-    namespace = plan.deployment.namespace
-    return plan, manifest_yaml, namespace
+    return plans if len(plans) > 1 else plan, manifest_yaml, namespace
 
 
 def _submit_manifest(manifest_yaml: str, namespace: str) -> str:
@@ -253,7 +278,10 @@ def experiment_validate(**kwargs: object) -> int:
 
 @experiment_group.command(
     "resolve",
-    help="Resolve an experiment into the fully expanded RunPlan used by BenchFlow.",
+    help=(
+        "Resolve an experiment into the fully expanded RunPlan used by BenchFlow. "
+        "Matrix experiments resolve to a list of RunPlans."
+    ),
     short_help="Resolve profiles into a RunPlan",
 )
 @experiment_input_options
@@ -271,7 +299,10 @@ def experiment_resolve(**kwargs: object) -> int:
 
 @experiment_group.command(
     "render-pipelinerun",
-    help="Render the Tekton PipelineRun that would be submitted for an experiment.",
+    help=(
+        "Render the Tekton PipelineRun that would be submitted for an experiment. "
+        "Matrix experiments render the supervisor PipelineRun."
+    ),
     short_help="Render the PipelineRun manifest",
 )
 @experiment_input_options
@@ -303,7 +334,11 @@ def experiment_render_deployment(**kwargs: object) -> int:
 
 @experiment_group.command(
     "run",
-    help="Submit an experiment to the cluster and optionally follow it.",
+    help=(
+        "Submit an experiment to the cluster and optionally follow it. "
+        "Matrix experiments submit a supervisor PipelineRun that runs child "
+        "combinations sequentially."
+    ),
     short_help="Submit an experiment as a PipelineRun",
 )
 @experiment_input_options

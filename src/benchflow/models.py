@@ -34,6 +34,22 @@ def sanitize_name(value: str, max_length: int = 42) -> str:
     return cleaned[:max_length]
 
 
+def normalize_profile_refs(value: str | list[str], field_name: str) -> list[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValidationError(f"missing required field: {field_name}")
+        return [cleaned]
+    if isinstance(value, list):
+        cleaned_values = [str(item).strip() for item in value if str(item).strip()]
+        if not cleaned_values:
+            raise ValidationError(f"missing required field: {field_name}")
+        return cleaned_values
+    raise ValidationError(
+        f"{field_name} must be a string or a list of strings, got: {value!r}"
+    )
+
+
 @dataclass(slots=True)
 class Metadata:
     name: str
@@ -76,22 +92,22 @@ class StageSpec:
 
 @dataclass(slots=True)
 class MlflowSpec:
-    experiment: str = "benchflow"
+    experiment: str = ""
     tags: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "MlflowSpec":
         raw = raw or {}
         tags = {str(key): str(value) for key, value in (raw.get("tags") or {}).items()}
-        return cls(experiment=str(raw.get("experiment", "benchflow")), tags=tags)
+        return cls(experiment=str(raw.get("experiment", "") or ""), tags=tags)
 
 
 @dataclass(slots=True)
 class ExperimentSpec:
     model: ModelSpec
-    deployment_profile: str
-    benchmark_profile: str
-    metrics_profile: str = "detailed"
+    deployment_profile: list[str]
+    benchmark_profile: list[str]
+    metrics_profile: list[str] = field(default_factory=lambda: ["detailed"])
     namespace: str = "benchflow"
     service_account: str = "benchflow-runner"
     ttl_seconds_after_finished: int = 3600

@@ -10,19 +10,22 @@ import click
 from ..artifacts import collect_artifacts
 from ..benchmark import BenchmarkRunFailed, generate_report, run_benchmark
 from ..cleanup import cleanup_llmd
-from ..cluster import follow_pipelinerun, get_current_namespace
+from ..cluster import create_manifest, follow_pipelinerun, get_current_namespace
 from ..deploy import deploy_llmd
 from ..execution import load_run_plan_from_sources, require_platform
 from ..install import BootstrapOptions, run_bootstrap
+from ..loaders import load_run_plan_data
 from ..metrics import collect_metrics
 from ..mlflow_upload import upload_to_mlflow
 from ..model import download_model
 from ..models import ValidationError
 from ..repository import clone_repo
+from ..renderers.tekton import render_pipelinerun
 from ..tasking import assert_task_status, write_stage_results
-from ..ui import detail, emit, step, success
+from ..ui import detail, emit, step, success, warning
 from ..waiting import wait_for_endpoint
 from .shared import (
+    dump_yaml,
     experiment_input_options,
     invoke_handler,
     load_runtime_plan,
@@ -364,6 +367,60 @@ def cmd_task_assert_status(args: argparse.Namespace) -> int:
         )
     assert_task_status(args.task_name, args.task_status, allowed_statuses)
     print(args.task_status)
+    return 0
+
+
+def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
+    try:
+        raw_run_plans = json.loads(args.run_plans_json)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("invalid JSON passed to --run-plans-json") from exc
+
+    if not isinstance(raw_run_plans, list) or not raw_run_plans:
+        raise ValidationError("--run-plans-json must contain a non-empty JSON array")
+
+    plans = [load_run_plan_data(item) for item in raw_run_plans]
+    namespaces = {plan.deployment.namespace for plan in plans}
+    if len(namespaces) != 1:
+        raise ValidationError(
+            "matrix execution requires all child RunPlans to target the same namespace"
+        )
+
+    step(
+        f"Running matrix supervisor for {plans[0].metadata.name} "
+        f"with {len(plans)} profile combination(s)"
+    )
+    failures: list[str] = []
+    total = len(plans)
+
+    for index, plan in enumerate(plans, start=1):
+        descriptor = (
+            f"deployment={plan.profiles.deployment}, "
+            f"benchmark={plan.profiles.benchmark}, "
+            f"metrics={plan.profiles.metrics}"
+        )
+        step(f"[{index}/{total}] Submitting child PipelineRun")
+        detail(descriptor)
+        manifest = render_pipelinerun(plan, pipeline_name=args.child_pipeline_name)
+        submitted = create_manifest(dump_yaml(manifest), plan.deployment.namespace)
+        name = str(submitted.get("metadata", {}).get("name") or "")
+        if not name:
+            raise ValidationError("child PipelineRun submission returned no name")
+        detail(f"Created PipelineRun {name} in namespace {plan.deployment.namespace}")
+        succeeded = follow_pipelinerun(plan.deployment.namespace, name)
+        if succeeded:
+            success(f"[{index}/{total}] {name} succeeded")
+            continue
+        warning(f"[{index}/{total}] {name} failed")
+        failures.append(name)
+
+    if failures:
+        raise ValidationError(
+            f"{len(failures)} matrix child run(s) failed: {', '.join(failures)}"
+        )
+
+    success(f"Matrix supervisor completed {total} child PipelineRun(s)")
+    print("completed")
     return 0
 
 
@@ -910,6 +967,29 @@ def task_resolve_run_plan_command(**kwargs: object) -> int:
 )
 def task_assert_status_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_assert_status, **kwargs)
+
+
+@task_group.command(
+    "run-experiment-matrix",
+    help=(
+        "Internal command used by Tekton to run a cartesian product of resolved "
+        "RunPlans sequentially in the cluster."
+    ),
+    short_help="Run a matrix of child PipelineRuns",
+)
+@click.option(
+    "--run-plans-json",
+    required=True,
+    help="JSON array of resolved RunPlan objects.",
+)
+@click.option(
+    "--child-pipeline-name",
+    default="benchflow-e2e",
+    show_default=True,
+    help="Pipeline name to use for the child PipelineRuns.",
+)
+def task_run_experiment_matrix_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_task_run_experiment_matrix, **kwargs)
 
 
 @click.command(

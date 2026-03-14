@@ -45,7 +45,7 @@ CONTEXT_SETTINGS = {
         "  bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml\n"
         "  bflow experiment run --model Qwen/Qwen3-0.6B "
         "--deployment-profile llm-d-inference-scheduling "
-        "--benchmark-profile concurrent-1k-1k"
+        "--benchmark-profile guidellm-concurrent-1k-1k"
     ),
 )
 def cli() -> None:

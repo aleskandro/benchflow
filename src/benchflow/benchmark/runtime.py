@@ -616,15 +616,11 @@ def run_benchmark_with_mlflow(
                 vllm_version = "unknown"
 
             default_tags = {
-                "model": model,
-                "rate_type": rate_type,
-                "vllm": vllm_version,
-                "guidellm": guidellm_version,
+                "vllm_version": vllm_version,
+                "guidellm_version": guidellm_version,
             }
             if pipeline_run_name:
                 default_tags["pipeline_run"] = pipeline_run_name
-            if accelerator:
-                default_tags["accelerator"] = accelerator
             if tags:
                 default_tags.update(tags)
             mlflow.set_tags(default_tags)

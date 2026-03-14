@@ -2,7 +2,7 @@
 
 [![Image build status](https://github.com/albertoperdomo2/benchflow/actions/workflows/build-images.yaml/badge.svg)](https://github.com/albertoperdomo2/benchflow/actions/workflows/build-images.yaml)
 
-BenchFlow is a control plane for repeatable LLM inference benchmarks on OpenShift. It turns an experiment file, or an equivalent set of CLI flags, into one resolved run plan, deploys the scenario, runs the benchmark, captures metrics and artifacts, and pushes the result to MLflow. The current implemented execution path is `llm-d`.
+BenchFlow is a control plane for repeatable LLM inference benchmarks on OpenShift. It turns an experiment file, or an equivalent set of CLI flags, into one resolved run plan, deploys the scenario, runs the benchmark, captures metrics and artifacts, and pushes the result to MLflow. The current implemented execution path is `llm-d`. Experiments may also define cartesian products of deployment, benchmark, and metrics profiles; in that case BenchFlow submits one supervisor PipelineRun that executes the child combinations sequentially in the cluster.
 
 The default runtime image is `ghcr.io/albertoperdomo2/benchflow/benchflow:latest`. The default namespace is `benchflow`.
 
@@ -53,11 +53,22 @@ bflow experiment run \
   --model Qwen/Qwen3-0.6B \
   --model-revision main \
   --deployment-profile llm-d-inference-scheduling \
-  --benchmark-profile concurrent-1k-1k \
+  --benchmark-profile guidellm-concurrent-1k-1k \
   --metrics-profile detailed \
   --namespace benchflow \
   --mlflow-experiment benchflow-qwen
 ```
+
+A matrix experiment can keep the same shape and turn one or more profile fields into lists:
+
+```yaml
+spec:
+  deployment_profile: [llm-d-inference-scheduling, llm-d-precise-prefix-cache]
+  benchmark_profile: [guidellm-smoke, guidellm-concurrent-1k-1k]
+  metrics_profile: detailed
+```
+
+`bflow experiment run` will expand that cartesian product, submit one supervisor PipelineRun, and let the cluster run the child combinations without keeping the local CLI process alive.
 
 If you want to inspect the packaged profiles first:
 

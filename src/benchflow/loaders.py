@@ -28,6 +28,7 @@ from .models import (
     ValidationError,
     _require,
     _as_bool,
+    normalize_profile_refs,
     parse_metadata,
     parse_model_spec,
 )
@@ -72,20 +73,21 @@ def load_experiment(path: Path) -> Experiment:
 
     experiment_spec = ExperimentSpec(
         model=parse_model_spec(spec.get("model") or {}),
-        deployment_profile=str(spec.get("deployment_profile") or ""),
-        benchmark_profile=str(spec.get("benchmark_profile") or ""),
-        metrics_profile=str(spec.get("metrics_profile", "detailed")),
+        deployment_profile=normalize_profile_refs(
+            spec.get("deployment_profile") or "", "spec.deployment_profile"
+        ),
+        benchmark_profile=normalize_profile_refs(
+            spec.get("benchmark_profile") or "", "spec.benchmark_profile"
+        ),
+        metrics_profile=normalize_profile_refs(
+            spec.get("metrics_profile", "detailed"), "spec.metrics_profile"
+        ),
         namespace=str(spec.get("namespace", "benchflow")),
         service_account=str(spec.get("service_account", "benchflow-runner")),
         ttl_seconds_after_finished=int(spec.get("ttl_seconds_after_finished", 3600)),
         stages=StageSpec.from_dict(spec.get("stages")),
         mlflow=MlflowSpec.from_dict(spec.get("mlflow")),
     )
-
-    if not experiment_spec.deployment_profile:
-        raise ValidationError(f"{path} is missing spec.deployment_profile")
-    if not experiment_spec.benchmark_profile:
-        raise ValidationError(f"{path} is missing spec.benchmark_profile")
 
     return Experiment(
         api_version=str(raw.get("apiVersion", "benchflow.io/v1alpha1")),

@@ -17,6 +17,7 @@ from ..loaders import (
     load_experiment,
     load_yaml_file,
 )
+from ..matrix import require_single_experiment_plan, resolve_experiment_matrix
 from ..models import (
     Experiment,
     ExperimentSpec,
@@ -92,9 +93,9 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
         mlflow = MlflowSpec()
         spec = ExperimentSpec(
             model=ModelSpec(name=""),
-            deployment_profile="",
-            benchmark_profile="",
-            metrics_profile="detailed",
+            deployment_profile=[],
+            benchmark_profile=[],
+            metrics_profile=["detailed"],
             namespace="benchflow",
             service_account="benchflow-runner",
             ttl_seconds_after_finished=3600,
@@ -121,8 +122,9 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
         )
 
     deployment_profile = (
-        getattr(args, "deployment_profile", None)
-        or base_experiment.spec.deployment_profile
+        [getattr(args, "deployment_profile", None)]
+        if getattr(args, "deployment_profile", None)
+        else list(base_experiment.spec.deployment_profile)
     )
     if not deployment_profile:
         raise ValidationError(
@@ -130,13 +132,20 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
         )
 
     benchmark_profile = (
-        getattr(args, "benchmark_profile", None)
-        or base_experiment.spec.benchmark_profile
+        [getattr(args, "benchmark_profile", None)]
+        if getattr(args, "benchmark_profile", None)
+        else list(base_experiment.spec.benchmark_profile)
     )
     if not benchmark_profile:
         raise ValidationError(
             "missing required input: provide an experiment file or --benchmark-profile"
         )
+
+    metrics_profile = (
+        [getattr(args, "metrics_profile", None)]
+        if getattr(args, "metrics_profile", None)
+        else list(base_experiment.spec.metrics_profile)
+    )
 
     name = (
         getattr(args, "name", None)
@@ -168,8 +177,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
             ),
             deployment_profile=deployment_profile,
             benchmark_profile=benchmark_profile,
-            metrics_profile=getattr(args, "metrics_profile", None)
-            or base_experiment.spec.metrics_profile,
+            metrics_profile=metrics_profile,
             namespace=getattr(args, "namespace", None)
             or base_experiment.spec.namespace,
             service_account=getattr(args, "service_account", None)
@@ -190,9 +198,15 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
 
 
 def load_plan(args: argparse.Namespace):
-    experiment = experiment_from_args(args)
+    experiment = require_single_experiment_plan(experiment_from_args(args))
     catalog = ProfileCatalog.load(profiles_dir_from(args))
     return resolve_run_plan(experiment, catalog)
+
+
+def load_plans(args: argparse.Namespace):
+    experiment = experiment_from_args(args)
+    catalog = ProfileCatalog.load(profiles_dir_from(args))
+    return resolve_experiment_matrix(experiment, catalog)
 
 
 def load_runtime_plan(args: argparse.Namespace):

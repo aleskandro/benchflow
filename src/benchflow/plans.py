@@ -3,10 +3,13 @@ from __future__ import annotations
 from .loaders import ProfileCatalog
 from .models import (
     Experiment,
+    MlflowSpec,
     ProfileRefs,
     ResolvedDeployment,
     ResolvedRunPlan,
     TargetSpec,
+    ValidationError,
+    normalize_profile_refs,
     sanitize_name,
 )
 
@@ -41,9 +44,28 @@ def _target_for(
 def resolve_run_plan(
     experiment: Experiment, catalog: ProfileCatalog
 ) -> ResolvedRunPlan:
-    deployment_profile = catalog.require_deployment(experiment.spec.deployment_profile)
-    benchmark_profile = catalog.require_benchmark(experiment.spec.benchmark_profile)
-    metrics_profile = catalog.require_metrics(experiment.spec.metrics_profile)
+    deployment_profile_names = normalize_profile_refs(
+        experiment.spec.deployment_profile, "spec.deployment_profile"
+    )
+    benchmark_profile_names = normalize_profile_refs(
+        experiment.spec.benchmark_profile, "spec.benchmark_profile"
+    )
+    metrics_profile_names = normalize_profile_refs(
+        experiment.spec.metrics_profile, "spec.metrics_profile"
+    )
+
+    if len(deployment_profile_names) != 1:
+        raise ValidationError(
+            "resolve_run_plan requires exactly one deployment profile"
+        )
+    if len(benchmark_profile_names) != 1:
+        raise ValidationError("resolve_run_plan requires exactly one benchmark profile")
+    if len(metrics_profile_names) != 1:
+        raise ValidationError("resolve_run_plan requires exactly one metrics profile")
+
+    deployment_profile = catalog.require_deployment(deployment_profile_names[0])
+    benchmark_profile = catalog.require_benchmark(benchmark_profile_names[0])
+    metrics_profile = catalog.require_metrics(metrics_profile_names[0])
 
     release_name = sanitize_name(experiment.metadata.name, max_length=42)
     namespace = deployment_profile.spec.namespace or experiment.spec.namespace
@@ -72,12 +94,23 @@ def resolve_run_plan(
     )
 
     tags = dict(experiment.spec.mlflow.tags)
-    tags.setdefault("deployment_platform", deployment.platform)
-    tags.setdefault("deployment_mode", deployment.mode)
+    tags.setdefault("deployment_type", f"{deployment.platform}-{deployment.mode}")
+    tags.setdefault("deployment_profile", deployment_profile.metadata.name)
     tags.setdefault("benchmark_profile", benchmark_profile.metadata.name)
+    tags.setdefault("metrics_profile", metrics_profile.metadata.name)
 
-    mlflow = experiment.spec.mlflow
-    mlflow.tags = tags
+    model_name_fragment = (
+        experiment.spec.model.name.lower().replace("/", "-").replace(".", "").strip("-")
+    )
+    default_experiment_name = (
+        f"{model_name_fragment}-{benchmark_profile.metadata.name}"
+        if model_name_fragment
+        else benchmark_profile.metadata.name
+    )
+    mlflow = MlflowSpec(
+        experiment=experiment.spec.mlflow.experiment.strip() or default_experiment_name,
+        tags=tags,
+    )
 
     return ResolvedRunPlan(
         api_version="benchflow.io/v1alpha1",
