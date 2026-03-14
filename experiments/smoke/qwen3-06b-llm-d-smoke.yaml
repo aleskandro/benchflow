@@ -7,7 +7,7 @@ spec:
     name: Qwen/Qwen3-0.6B
     revision: main
   deployment_profile: llm-d-inference-scheduling
-  benchmark_profile: guidellm-concurrent-1k-1k
+  benchmark_profile: guidellm-smoke
   metrics_profile: default
   namespace: benchflow
   mlflow:
