@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: "{{ GRAFANA_NAMESPACE }}"
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/component: grafana
+data:
+  benchflow-live.json: "{{ GRAFANA_LIVE_DASHBOARD_JSON }}"

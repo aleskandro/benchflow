@@ -1,0 +1,14 @@
+apiVersion: 1
+datasources:
+  - name: openshift-monitoring
+    uid: openshift-monitoring
+    type: prometheus
+    access: proxy
+    url: https://thanos-querier.openshift-monitoring.svc:9091
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      tlsSkipVerify: true
+      httpHeaderName1: Authorization
+    secureJsonData:
+      httpHeaderValue1: Bearer ${GRAFANA_THANOS_TOKEN}

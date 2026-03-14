@@ -14,7 +14,7 @@ BenchFlow should stay narrow, explicit, and operationally clear. If a change mak
 ## Architecture Principles
 
 - The user-facing entrypoint is `bflow`.
-- The install path is `bflow install`.
+- The bootstrap path is `bflow bootstrap`.
 - The default namespace is `benchflow`, unless explicitly overridden.
 - Tekton is the execution engine, not the place for business logic.
 - Python owns the control logic.

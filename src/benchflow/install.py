@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from .assets import asset_text, render_yaml_documents
 from .cluster import CommandError, discover_repo_root, require_command
 from .ui import detail, emit, panel, rule, step, success, warning
 
@@ -32,7 +33,7 @@ CONNECTIVITY_MARKERS = (
 
 
 @dataclass
-class InstallOptions:
+class BootstrapOptions:
     namespace: str = "benchflow"
     install_tekton: bool = True
     install_grafana: bool = True
@@ -47,11 +48,15 @@ class InstallOptions:
 class Installer:
     pipelines_operator_namespace = "openshift-operators"
     pipelines_runtime_namespace = "openshift-pipelines"
+    nfd_namespace = "openshift-nfd"
+    gpu_operator_namespace = "nvidia-gpu-operator"
+    nfd_package_name = "nfd"
+    gpu_operator_package_name = "gpu-operator-certified"
     grafana_admin_secret_name = "grafana-admin-credentials"
     grafana_datasource_service_account = "benchflow-grafana"
     grafana_datasource_token_secret = "benchflow-grafana-datasource-token"
 
-    def __init__(self, repo_root: Path, options: InstallOptions) -> None:
+    def __init__(self, repo_root: Path, options: BootstrapOptions) -> None:
         self.repo_root = repo_root.resolve()
         self.options = options
         self._default_storage_class_name: str | None = None
@@ -78,6 +83,7 @@ class Installer:
 
         self.print_intro()
 
+        self.install_accelerator_prerequisites()
         self.install_tekton_if_needed()
         self.configure_tekton_scc()
         self.install_grafana_if_needed()
@@ -89,12 +95,18 @@ class Installer:
 
     def print_intro(self) -> None:
         options = self.options
-        rule("BenchFlow Install")
+        rule("BenchFlow Bootstrap")
         panel(
             "Configuration",
             (
                 ("Namespace", options.namespace),
                 ("Grafana namespace", self.grafana_namespace),
+                ("NFD namespace", self.nfd_namespace),
+                ("GPU operator namespace", self.gpu_operator_namespace),
+                (
+                    "GPU prerequisites",
+                    "NFD operator + instance, GPU operator + ClusterPolicy",
+                ),
                 ("Install Tekton if missing", str(options.install_tekton).lower()),
                 ("Install Grafana if missing", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
@@ -130,12 +142,18 @@ class Installer:
             grafana_host = self.discover_grafana_route_host()
         except CommandError as exc:
             warning(f"Could not query the Grafana route for the final summary: {exc}")
-        rule("Install Complete")
+        rule("Bootstrap Complete")
         panel(
             "BenchFlow",
             (
                 ("Namespace", options.namespace),
                 ("Grafana namespace", self.grafana_namespace),
+                ("NFD namespace", self.nfd_namespace),
+                ("GPU operator namespace", self.gpu_operator_namespace),
+                (
+                    "GPU prerequisites",
+                    "NFD operator + instance, GPU operator + ClusterPolicy",
+                ),
                 ("Tekton install attempted", str(options.install_tekton).lower()),
                 ("Grafana install attempted", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
@@ -283,6 +301,45 @@ class Installer:
             description=description,
             echo_output=True,
         )
+
+    def _asset_path(self, relative_path: str | Path) -> Path:
+        return Path("bootstrap") / Path(relative_path)
+
+    def _asset_text(self, relative_path: str | Path) -> str:
+        return asset_text(self._asset_path(relative_path))
+
+    def _render_asset_documents(
+        self, relative_path: str | Path, variables: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        return render_yaml_documents(
+            self._asset_path(relative_path),
+            variables or {},
+        )
+
+    def _apply_asset_documents(
+        self,
+        relative_path: str | Path,
+        *,
+        namespace: str | None,
+        description: str,
+        variables: dict[str, Any] | None = None,
+    ) -> None:
+        self._apply_documents(
+            self._render_asset_documents(relative_path, variables),
+            namespace=namespace,
+            description=description,
+        )
+
+    def _base_asset_variables(self) -> dict[str, Any]:
+        return {
+            "BENCHFLOW_NAMESPACE": self.options.namespace,
+            "GRAFANA_NAMESPACE": self.grafana_namespace,
+            "GRAFANA_SERVICE_ACCOUNT": self.grafana_datasource_service_account,
+            "GRAFANA_DATASOURCE_TOKEN_SECRET": self.grafana_datasource_token_secret,
+            "GRAFANA_ADMIN_SECRET_NAME": self.grafana_admin_secret_name,
+            "NFD_NAMESPACE": self.nfd_namespace,
+            "GPU_OPERATOR_NAMESPACE": self.gpu_operator_namespace,
+        }
 
     def _wait_for_resource(
         self, *, resource: str, namespace: str | None, timeout_seconds: int, label: str
@@ -488,6 +545,137 @@ class Installer:
             description=description or f"reading subscription/{subscription_name}",
         )
 
+    def _get_packagemanifest(self, package_name: str) -> dict[str, Any]:
+        return self._oc_json(
+            "get",
+            "packagemanifest",
+            package_name,
+            "-n",
+            "openshift-marketplace",
+            retry=True,
+            description=f"reading packagemanifest/{package_name}",
+        )
+
+    def _default_channel_for_package(self, package_name: str) -> str:
+        package = self._get_packagemanifest(package_name)
+        channel = package.get("status", {}).get("defaultChannel", "")
+        if not channel:
+            raise CommandError(
+                f"packagemanifest/{package_name} does not expose a default channel"
+            )
+        return str(channel)
+
+    def _catalog_source_for_package(self, package_name: str) -> tuple[str, str]:
+        package = self._get_packagemanifest(package_name)
+        status = package.get("status", {}) or {}
+        catalog_source = status.get("catalogSource", "")
+        catalog_namespace = status.get("catalogSourceNamespace", "")
+        if not catalog_source or not catalog_namespace:
+            raise CommandError(
+                f"packagemanifest/{package_name} does not expose catalog source details"
+            )
+        return str(catalog_source), str(catalog_namespace)
+
+    def _operatorgroups_in_namespace(self, namespace: str) -> list[dict[str, Any]]:
+        operatorgroups = self._oc_json(
+            "get",
+            "operatorgroup",
+            "-n",
+            namespace,
+            retry=True,
+            description=f"reading operatorgroups in namespace {namespace}",
+        )
+        return list(operatorgroups.get("items", []))
+
+    def _reuse_or_create_operatorgroup(
+        self, *, namespace: str, operatorgroup_name: str
+    ) -> bool:
+        operatorgroups = self._operatorgroups_in_namespace(namespace)
+        if not operatorgroups:
+            return False
+
+        if len(operatorgroups) > 1:
+            names = ", ".join(
+                str(item.get("metadata", {}).get("name", "unknown"))
+                for item in operatorgroups
+            )
+            raise CommandError(
+                f"namespace {namespace} already has multiple OperatorGroups ({names}); "
+                "BenchFlow requires exactly one. Clean the namespace and rerun bootstrap."
+            )
+
+        operatorgroup = operatorgroups[0]
+        target_namespaces = (
+            operatorgroup.get("spec", {}).get("targetNamespaces", []) or []
+        )
+        if target_namespaces not in ([], [namespace]):
+            raise CommandError(
+                f"existing OperatorGroup {operatorgroup.get('metadata', {}).get('name', 'unknown')} "
+                f"in namespace {namespace} targets {target_namespaces}, expected [{namespace}]"
+            )
+        detail(
+            "Reusing existing OperatorGroup "
+            f"{operatorgroup.get('metadata', {}).get('name', 'unknown')} in namespace {namespace}"
+        )
+        return True
+
+    def _install_operator_from_package(
+        self,
+        *,
+        package_name: str,
+        namespace: str,
+        subscription_name: str,
+        operatorgroup_name: str,
+        asset_path: str,
+    ) -> str:
+        channel = self._default_channel_for_package(package_name)
+        catalog_source, catalog_namespace = self._catalog_source_for_package(
+            package_name
+        )
+        self.ensure_namespace(namespace)
+        has_existing_operatorgroup = self._reuse_or_create_operatorgroup(
+            namespace=namespace, operatorgroup_name=operatorgroup_name
+        )
+        documents = self._render_asset_documents(
+            asset_path,
+            {
+                "OPERATOR_NAMESPACE": namespace,
+                "OPERATORGROUP_NAME": operatorgroup_name,
+                "SUBSCRIPTION_NAME": subscription_name,
+                "PACKAGE_NAME": package_name,
+                "CHANNEL": channel,
+                "SOURCE": catalog_source,
+                "SOURCE_NAMESPACE": catalog_namespace,
+            },
+        )
+        if has_existing_operatorgroup:
+            documents = [
+                document
+                for document in documents
+                if document.get("kind") != "OperatorGroup"
+            ]
+        self._apply_documents(
+            documents,
+            namespace=None,
+            description=f"installing operator package {package_name}",
+        )
+        step(f"Waiting for the {package_name} subscription to resolve")
+        csv_name = self._wait_for_subscription_current_csv(
+            subscription_name=subscription_name,
+            namespace=namespace,
+            timeout_seconds=600,
+        )
+        step(f"Waiting for CSV {csv_name} to succeed")
+        self._wait_for_csv_succeeded(
+            subscription_name=subscription_name,
+            namespace=namespace,
+            csv_name=csv_name,
+            timeout_seconds=900,
+            csv_prefix=f"{package_name}.",
+            catalog_source=catalog_source,
+        )
+        return csv_name
+
     def _approve_pending_installplan(
         self,
         *,
@@ -621,6 +809,87 @@ class Installer:
         )
         raise CommandError(f"timed out waiting for CSV {csv_name} to reach Succeeded")
 
+    def install_accelerator_prerequisites(self) -> None:
+        step("Installing accelerator prerequisites for GPU inference")
+        self.install_nfd_operator_and_instance()
+        self.install_gpu_operator_and_cluster_policy()
+
+    def nfd_ready(self) -> bool:
+        return self._resource_exists(
+            "get",
+            "nodefeaturediscovery.nfd.openshift.io",
+            "nfd-instance",
+            "-n",
+            self.nfd_namespace,
+        )
+
+    def gpu_operator_ready(self) -> bool:
+        if not self._resource_exists(
+            "get", "clusterpolicy.nvidia.com", "gpu-cluster-policy"
+        ):
+            return False
+        cluster_policy = self._oc_json(
+            "get",
+            "clusterpolicy.nvidia.com",
+            "gpu-cluster-policy",
+            retry=True,
+            description="reading ClusterPolicy/gpu-cluster-policy",
+        )
+        status = str(cluster_policy.get("status", {}).get("state", ""))
+        return status.lower() == "ready"
+
+    def install_nfd_operator_and_instance(self) -> None:
+        if self.nfd_ready():
+            success("Node Feature Discovery instance already present")
+            return
+        self._install_operator_from_package(
+            package_name=self.nfd_package_name,
+            namespace=self.nfd_namespace,
+            subscription_name="nfd",
+            operatorgroup_name="nfd",
+            asset_path="operators/nfd/operator.yaml",
+        )
+        self._wait_for_resource(
+            resource="crd/nodefeaturediscoveries.nfd.openshift.io",
+            namespace=None,
+            timeout_seconds=600,
+            label="CRD nodefeaturediscoveries.nfd.openshift.io",
+        )
+        step("Applying the Node Feature Discovery instance")
+        self._apply_asset_documents(
+            "operators/nfd/instance.yaml",
+            namespace=None,
+            description="applying NodeFeatureDiscovery instance",
+            variables=self._base_asset_variables(),
+        )
+        success("Node Feature Discovery operator and instance are present")
+
+    def install_gpu_operator_and_cluster_policy(self) -> None:
+        if self.gpu_operator_ready():
+            success("NVIDIA GPU ClusterPolicy already present and ready")
+            return
+        self._install_operator_from_package(
+            package_name=self.gpu_operator_package_name,
+            namespace=self.gpu_operator_namespace,
+            subscription_name="gpu-operator-certified",
+            operatorgroup_name="gpu-operator-certified",
+            asset_path="operators/gpu/operator.yaml",
+        )
+        self._wait_for_resource(
+            resource="crd/clusterpolicies.nvidia.com",
+            namespace=None,
+            timeout_seconds=600,
+            label="CRD clusterpolicies.nvidia.com",
+        )
+        step("Applying the NVIDIA GPU ClusterPolicy")
+        self._apply_asset_documents(
+            "operators/gpu/cluster-policy.yaml",
+            namespace=None,
+            description="applying NVIDIA GPU ClusterPolicy",
+            variables=self._base_asset_variables(),
+        )
+        success("NVIDIA GPU Operator and ClusterPolicy are present")
+
     def install_tekton_if_needed(self) -> None:
         if self.tekton_ready():
             success("Tekton CRDs already present")
@@ -634,17 +903,11 @@ class Installer:
         step(
             f"Installing OpenShift Pipelines operator in {self.pipelines_operator_namespace}"
         )
-        subscription_path = (
-            self.repo_root
-            / "config"
-            / "cluster"
-            / "operators"
-            / "openshift-pipelines-subscription.yaml"
-        )
-        subscription = yaml.safe_load(subscription_path.read_text(encoding="utf-8"))
-        subscription["spec"]["channel"] = self.options.tekton_channel
         self._apply_documents(
-            [subscription],
+            self._render_asset_documents(
+                "operators/tekton/subscription.yaml",
+                {"TEKTON_CHANNEL": self.options.tekton_channel},
+            ),
             namespace=None,
             description="applying OpenShift Pipelines subscription",
         )
@@ -809,53 +1072,17 @@ class Installer:
 
     def apply_workspace_pvcs(self) -> None:
         step("Applying workspace PVCs")
-        documents = [
-            {
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": {
-                    "name": "models-storage",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "model-cache",
-                    },
-                },
-                "spec": {
-                    "accessModes": [self.options.models_storage_access_mode],
-                    "resources": {
-                        "requests": {"storage": self.options.models_storage_size}
-                    },
-                },
-            },
-            {
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": {
-                    "name": "benchmark-results",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "benchmark-results",
-                    },
-                },
-                "spec": {
-                    "accessModes": ["ReadWriteOnce"],
-                    "resources": {
-                        "requests": {"storage": self.options.results_storage_size}
-                    },
-                },
-            },
-        ]
-        if self.options.models_storage_class:
-            documents[0]["spec"]["storageClassName"] = self.options.models_storage_class
-        if self.options.results_storage_class:
-            documents[1]["spec"]["storageClassName"] = (
-                self.options.results_storage_class
-            )
-
-        self._apply_documents(
-            documents,
+        self._apply_asset_documents(
+            "workspaces/pvcs.yaml",
             namespace=self.options.namespace,
             description="applying workspace PVCs",
+            variables={
+                "MODELS_STORAGE_ACCESS_MODE": self.options.models_storage_access_mode,
+                "MODELS_STORAGE_CLASS": self.options.models_storage_class,
+                "MODELS_STORAGE_SIZE": self.options.models_storage_size,
+                "RESULTS_STORAGE_CLASS": self.options.results_storage_class,
+                "RESULTS_STORAGE_SIZE": self.options.results_storage_size,
+            },
         )
 
     def apply_cluster_monitoring_rbac(self) -> None:
@@ -866,206 +1093,35 @@ class Installer:
                 "This BenchFlow MVP expects OpenShift cluster monitoring to be available."
             )
 
-        documents = [
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRoleBinding",
-                "metadata": {
-                    "name": f"benchflow-runner-cluster-monitoring-view-{self.options.namespace}",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "metrics",
-                    },
-                },
-                "subjects": [
-                    {
-                        "kind": "ServiceAccount",
-                        "name": "benchflow-runner",
-                        "namespace": self.options.namespace,
-                    }
-                ],
-                "roleRef": {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "ClusterRole",
-                    "name": "cluster-monitoring-view",
-                },
-            }
-        ]
-        self._apply_documents(
-            documents, namespace=None, description="applying cluster monitoring RBAC"
+        self._apply_asset_documents(
+            "rbac/runner-cluster-monitoring-view.yaml",
+            namespace=None,
+            description="applying cluster monitoring RBAC",
+            variables=self._base_asset_variables(),
         )
 
     def apply_runner_rbac(self) -> None:
         step("Applying runner RBAC")
-        namespaced_documents = [
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "Role",
-                "metadata": {
-                    "name": "benchflow-runner-llmd-apis",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "runner-rbac",
-                    },
-                },
-                "rules": [
-                    {
-                        "apiGroups": ["gateway.networking.k8s.io"],
-                        "resources": ["*"],
-                        "verbs": ["*"],
-                    },
-                    {
-                        "apiGroups": ["inference.networking.x-k8s.io"],
-                        "resources": ["*"],
-                        "verbs": ["*"],
-                    },
-                    {
-                        "apiGroups": ["llm-d.ai"],
-                        "resources": ["*"],
-                        "verbs": ["*"],
-                    },
-                    {
-                        "apiGroups": ["monitoring.coreos.com"],
-                        "resources": ["*"],
-                        "verbs": ["*"],
-                    },
-                    {
-                        "apiGroups": ["telemetry.istio.io"],
-                        "resources": ["*"],
-                        "verbs": ["*"],
-                    },
-                    {
-                        "apiGroups": ["networking.istio.io"],
-                        "resources": ["*"],
-                        "verbs": ["*"],
-                    },
-                ],
-            },
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "RoleBinding",
-                "metadata": {
-                    "name": "benchflow-runner-admin",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "runner-rbac",
-                    },
-                },
-                "subjects": [
-                    {
-                        "kind": "ServiceAccount",
-                        "name": "benchflow-runner",
-                        "namespace": self.options.namespace,
-                    }
-                ],
-                "roleRef": {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "ClusterRole",
-                    "name": "admin",
-                },
-            },
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "RoleBinding",
-                "metadata": {
-                    "name": "benchflow-runner-llmd-apis",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "runner-rbac",
-                    },
-                },
-                "subjects": [
-                    {
-                        "kind": "ServiceAccount",
-                        "name": "benchflow-runner",
-                        "namespace": self.options.namespace,
-                    }
-                ],
-                "roleRef": {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "Role",
-                    "name": "benchflow-runner-llmd-apis",
-                },
-            },
-        ]
-        self._apply_documents(
-            namespaced_documents,
+        self._apply_asset_documents(
+            "rbac/runner-namespaced.yaml",
             namespace=self.options.namespace,
             description="applying runner RBAC",
+            variables=self._base_asset_variables(),
         )
-
-        cluster_documents = [
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRole",
-                "metadata": {
-                    "name": f"benchflow-runner-llmd-cluster-rbac-{self.options.namespace}",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "runner-rbac",
-                    },
-                },
-                "rules": [
-                    {
-                        "apiGroups": [""],
-                        "resources": ["namespaces"],
-                        "resourceNames": [self.options.namespace],
-                        "verbs": ["get", "patch", "update"],
-                    },
-                    {
-                        "apiGroups": [""],
-                        "resources": ["namespaces"],
-                        "verbs": ["create"],
-                    },
-                    {
-                        "apiGroups": ["rbac.authorization.k8s.io"],
-                        "resources": ["clusterroles", "clusterrolebindings"],
-                        "verbs": ["*"],
-                    },
-                ],
-            },
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRoleBinding",
-                "metadata": {
-                    "name": f"benchflow-runner-llmd-cluster-rbac-{self.options.namespace}",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/purpose": "runner-rbac",
-                    },
-                },
-                "subjects": [
-                    {
-                        "kind": "ServiceAccount",
-                        "name": "benchflow-runner",
-                        "namespace": self.options.namespace,
-                    }
-                ],
-                "roleRef": {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "ClusterRole",
-                    "name": f"benchflow-runner-llmd-cluster-rbac-{self.options.namespace}",
-                },
-            },
-        ]
-        self._apply_documents(
-            cluster_documents,
+        self._apply_asset_documents(
+            "rbac/runner-cluster.yaml",
             namespace=None,
             description="applying runner cluster RBAC",
+            variables=self._base_asset_variables(),
         )
 
     def apply_namespaced_resources(self) -> None:
         step("Applying namespace RBAC")
-        rbac_dir = self.repo_root / "config" / "cluster" / "rbac"
-        self._oc(
-            "apply",
-            "-n",
-            self.options.namespace,
-            "-f",
-            str(rbac_dir),
-            retry=True,
-            description="applying namespace RBAC",
-            echo_output=True,
+        self._apply_asset_documents(
+            "rbac/runner-base.yaml",
+            namespace=self.options.namespace,
+            description="applying namespace service account",
+            variables=self._base_asset_variables(),
         )
         self.apply_runner_rbac()
         self.apply_cluster_monitoring_rbac()
@@ -1132,107 +1188,11 @@ class Installer:
             return
 
         step("Applying Grafana monitoring RBAC")
-        self._apply_documents(
-            [
-                {
-                    "apiVersion": "v1",
-                    "kind": "ServiceAccount",
-                    "metadata": {
-                        "name": self.grafana_datasource_service_account,
-                        "labels": {
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
-                        },
-                    },
-                },
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "Role",
-                    "metadata": {
-                        "name": "benchflow-grafana-route-reader",
-                        "labels": {
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
-                        },
-                    },
-                    "rules": [
-                        {
-                            "apiGroups": ["route.openshift.io"],
-                            "resources": ["routes"],
-                            "verbs": ["get", "list"],
-                        }
-                    ],
-                },
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "RoleBinding",
-                    "metadata": {
-                        "name": "benchflow-grafana-route-reader",
-                        "labels": {
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
-                        },
-                    },
-                    "subjects": [
-                        {
-                            "kind": "ServiceAccount",
-                            "name": "benchflow-runner",
-                            "namespace": self.options.namespace,
-                        }
-                    ],
-                    "roleRef": {
-                        "apiGroup": "rbac.authorization.k8s.io",
-                        "kind": "Role",
-                        "name": "benchflow-grafana-route-reader",
-                    },
-                },
-                {
-                    "apiVersion": "v1",
-                    "kind": "Secret",
-                    "metadata": {
-                        "name": self.grafana_datasource_token_secret,
-                        "annotations": {
-                            "kubernetes.io/service-account.name": self.grafana_datasource_service_account
-                        },
-                        "labels": {
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
-                        },
-                    },
-                    "type": "kubernetes.io/service-account-token",
-                },
-            ],
-            namespace=self.grafana_namespace,
-            description="applying Grafana service account resources",
-        )
-        self._apply_documents(
-            [
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "ClusterRoleBinding",
-                    "metadata": {
-                        "name": f"benchflow-grafana-cluster-monitoring-view-{self.options.namespace}",
-                        "labels": {
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
-                        },
-                    },
-                    "subjects": [
-                        {
-                            "kind": "ServiceAccount",
-                            "name": self.grafana_datasource_service_account,
-                            "namespace": self.grafana_namespace,
-                        }
-                    ],
-                    "roleRef": {
-                        "apiGroup": "rbac.authorization.k8s.io",
-                        "kind": "ClusterRole",
-                        "name": "cluster-monitoring-view",
-                    },
-                }
-            ],
+        self._apply_asset_documents(
+            "operators/grafana/rbac.yaml",
             namespace=None,
-            description="applying Grafana cluster monitoring RBAC",
+            description="applying Grafana service account resources",
+            variables=self._base_asset_variables(),
         )
         self._wait_for_secret_key(
             name=self.grafana_datasource_token_secret,
@@ -1247,266 +1207,53 @@ class Installer:
             "-n",
             self.grafana_namespace,
         ):
-            self._apply_documents(
-                [
-                    {
-                        "apiVersion": "v1",
-                        "kind": "Secret",
-                        "metadata": {
-                            "name": self.grafana_admin_secret_name,
-                            "labels": {
-                                "app.kubernetes.io/name": "benchflow",
-                                "benchflow.io/component": "grafana",
-                            },
-                        },
-                        "type": "Opaque",
-                        "stringData": {
-                            "admin-user": "admin",
-                            "admin-password": secrets.token_urlsafe(24),
-                        },
-                    }
-                ],
+            self._apply_asset_documents(
+                "operators/grafana/admin-secret.yaml",
                 namespace=self.grafana_namespace,
                 description="applying Grafana admin credentials",
+                variables={
+                    **self._base_asset_variables(),
+                    "GRAFANA_ADMIN_USER": "admin",
+                    "GRAFANA_ADMIN_PASSWORD": secrets.token_urlsafe(24),
+                },
             )
 
-        dashboard_live_json = (
-            self.repo_root
-            / "config"
-            / "monitoring"
-            / "grafana-dashboard-benchflow.json"
-        ).read_text(encoding="utf-8")
-
-        datasources_yaml = yaml.safe_dump(
-            {
-                "apiVersion": 1,
-                "datasources": [
-                    {
-                        "name": "openshift-monitoring",
-                        "uid": "openshift-monitoring",
-                        "type": "prometheus",
-                        "access": "proxy",
-                        "url": "https://thanos-querier.openshift-monitoring.svc:9091",
-                        "isDefault": True,
-                        "jsonData": {
-                            "timeInterval": "15s",
-                            "tlsSkipVerify": True,
-                            "httpHeaderName1": "Authorization",
-                        },
-                        "secureJsonData": {
-                            "httpHeaderValue1": "Bearer ${GRAFANA_THANOS_TOKEN}",
-                        },
-                    },
-                ],
-            },
-            sort_keys=False,
-        )
-        dashboards_yaml = yaml.safe_dump(
-            {
-                "apiVersion": 1,
-                "providers": [
-                    {
-                        "name": "benchflow",
-                        "orgId": 1,
-                        "folder": "BenchFlow",
-                        "type": "file",
-                        "disableDeletion": False,
-                        "editable": True,
-                        "options": {"path": "/var/lib/grafana/dashboards"},
-                    }
-                ],
-            },
-            sort_keys=False,
-        )
-        documents = [
-            {
-                "apiVersion": "v1",
-                "kind": "ConfigMap",
-                "metadata": {
-                    "name": "grafana-provisioning",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                },
-                "data": {
-                    "datasources.yaml": datasources_yaml,
-                    "dashboards.yaml": dashboards_yaml,
-                },
-            },
-            {
-                "apiVersion": "v1",
-                "kind": "ConfigMap",
-                "metadata": {
-                    "name": "grafana-dashboards",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                },
-                "data": {
-                    "benchflow-live.json": dashboard_live_json,
-                },
-            },
-            {
-                "apiVersion": "apps/v1",
-                "kind": "Deployment",
-                "metadata": {
-                    "name": "grafana",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                },
-                "spec": {
-                    "replicas": 1,
-                    "selector": {
-                        "matchLabels": {
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
-                        }
-                    },
-                    "template": {
-                        "metadata": {
-                            "labels": {
-                                "app.kubernetes.io/name": "benchflow",
-                                "benchflow.io/component": "grafana",
-                            }
-                        },
-                        "spec": {
-                            "serviceAccountName": self.grafana_datasource_service_account,
-                            "containers": [
-                                {
-                                    "name": "grafana",
-                                    "image": "grafana/grafana:11.5.2",
-                                    "ports": [{"containerPort": 3000, "name": "http"}],
-                                    "env": [
-                                        {
-                                            "name": "GF_SECURITY_ADMIN_USER",
-                                            "valueFrom": {
-                                                "secretKeyRef": {
-                                                    "name": self.grafana_admin_secret_name,
-                                                    "key": "admin-user",
-                                                }
-                                            },
-                                        },
-                                        {
-                                            "name": "GF_SECURITY_ADMIN_PASSWORD",
-                                            "valueFrom": {
-                                                "secretKeyRef": {
-                                                    "name": self.grafana_admin_secret_name,
-                                                    "key": "admin-password",
-                                                }
-                                            },
-                                        },
-                                        {
-                                            "name": "GRAFANA_THANOS_TOKEN",
-                                            "valueFrom": {
-                                                "secretKeyRef": {
-                                                    "name": self.grafana_datasource_token_secret,
-                                                    "key": "token",
-                                                }
-                                            },
-                                        },
-                                    ],
-                                    "volumeMounts": [
-                                        {
-                                            "name": "grafana-data",
-                                            "mountPath": "/var/lib/grafana",
-                                        },
-                                        {
-                                            "name": "provisioning",
-                                            "mountPath": "/etc/grafana/provisioning/datasources/datasources.yaml",
-                                            "subPath": "datasources.yaml",
-                                        },
-                                        {
-                                            "name": "provisioning",
-                                            "mountPath": "/etc/grafana/provisioning/dashboards/dashboards.yaml",
-                                            "subPath": "dashboards.yaml",
-                                        },
-                                        {
-                                            "name": "dashboards",
-                                            "mountPath": "/var/lib/grafana/dashboards",
-                                        },
-                                    ],
-                                    "readinessProbe": {
-                                        "httpGet": {
-                                            "path": "/api/health",
-                                            "port": "http",
-                                        },
-                                        "initialDelaySeconds": 10,
-                                        "periodSeconds": 10,
-                                    },
-                                    "livenessProbe": {
-                                        "httpGet": {
-                                            "path": "/api/health",
-                                            "port": "http",
-                                        },
-                                        "initialDelaySeconds": 30,
-                                        "periodSeconds": 30,
-                                    },
-                                }
-                            ],
-                            "volumes": [
-                                {
-                                    "name": "grafana-data",
-                                    "emptyDir": {},
-                                },
-                                {
-                                    "name": "provisioning",
-                                    "configMap": {"name": "grafana-provisioning"},
-                                },
-                                {
-                                    "name": "dashboards",
-                                    "configMap": {"name": "grafana-dashboards"},
-                                },
-                            ],
-                        },
-                    },
-                },
-            },
-            {
-                "apiVersion": "v1",
-                "kind": "Service",
-                "metadata": {
-                    "name": "grafana",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                },
-                "spec": {
-                    "selector": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                    "ports": [{"name": "http", "port": 3000, "targetPort": "http"}],
-                },
-            },
-            {
-                "apiVersion": "route.openshift.io/v1",
-                "kind": "Route",
-                "metadata": {
-                    "name": "grafana",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                },
-                "spec": {
-                    "to": {"kind": "Service", "name": "grafana"},
-                    "port": {"targetPort": "http"},
-                    "tls": {
-                        "termination": "edge",
-                        "insecureEdgeTerminationPolicy": "Redirect",
-                    },
-                },
-            },
-        ]
-
         step("Applying Grafana deployment, route, datasource, and dashboards")
+        grafana_stack_variables = {
+            **self._base_asset_variables(),
+            "GRAFANA_DATASOURCES_YAML": self._asset_text(
+                "operators/grafana/datasources.yaml"
+            ),
+            "GRAFANA_DASHBOARDS_YAML": self._asset_text(
+                "operators/grafana/dashboard-providers.yaml"
+            ),
+            "GRAFANA_LIVE_DASHBOARD_JSON": self._asset_text(
+                "operators/grafana/benchflow-live-dashboard.json"
+            ),
+        }
         self._apply_documents(
-            documents,
+            [
+                *self._render_asset_documents(
+                    "operators/grafana/provisioning-configmap.yaml",
+                    grafana_stack_variables,
+                ),
+                *self._render_asset_documents(
+                    "operators/grafana/dashboards-configmap.yaml",
+                    grafana_stack_variables,
+                ),
+                *self._render_asset_documents(
+                    "operators/grafana/deployment.yaml",
+                    grafana_stack_variables,
+                ),
+                *self._render_asset_documents(
+                    "operators/grafana/service.yaml",
+                    grafana_stack_variables,
+                ),
+                *self._render_asset_documents(
+                    "operators/grafana/route.yaml",
+                    grafana_stack_variables,
+                ),
+            ],
             namespace=self.grafana_namespace,
             description="applying Grafana stack",
         )
@@ -1516,9 +1263,9 @@ class Installer:
         self.wait_for_grafana_ready(timeout_seconds=600)
 
 
-def run_install(repo_root: Path, options: InstallOptions) -> int:
+def run_bootstrap(repo_root: Path, options: BootstrapOptions) -> int:
     installer = Installer(repo_root, options)
     return installer.run()
 
 
-__all__ = ["InstallOptions", "Installer", "run_install", "discover_repo_root"]
+__all__ = ["BootstrapOptions", "Installer", "run_bootstrap", "discover_repo_root"]

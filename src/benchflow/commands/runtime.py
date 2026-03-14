@@ -13,7 +13,7 @@ from ..cleanup import cleanup_llmd
 from ..cluster import follow_pipelinerun, get_current_namespace
 from ..deploy import deploy_llmd
 from ..execution import load_run_plan_from_sources, require_platform
-from ..install import InstallOptions, run_install
+from ..install import BootstrapOptions, run_bootstrap
 from ..metrics import collect_metrics
 from ..mlflow_upload import upload_to_mlflow
 from ..model import download_model
@@ -33,11 +33,11 @@ from .shared import (
 )
 
 
-def cmd_install(args: argparse.Namespace) -> int:
+def cmd_bootstrap(args: argparse.Namespace) -> int:
     repo_root = repo_root_from(args)
-    return run_install(
+    return run_bootstrap(
         repo_root,
-        InstallOptions(
+        BootstrapOptions(
             namespace=args.namespace or "benchflow",
             install_tekton=not args.skip_tekton_install,
             install_grafana=not args.skip_grafana_install,
@@ -88,7 +88,9 @@ def cmd_deploy_llmd(args: argparse.Namespace) -> int:
     require_platform(plan, "llm-d")
     checkout_dir = deploy_llmd(
         plan,
-        source_dir=Path(args.source_dir).resolve() if args.source_dir else None,
+        workspace_dir=Path(args.workspace_dir).resolve()
+        if args.workspace_dir
+        else None,
         manifests_dir=Path(args.manifests_dir).resolve()
         if args.manifests_dir
         else None,
@@ -366,9 +368,12 @@ def cmd_task_assert_status(args: argparse.Namespace) -> int:
 
 
 @click.command(
-    "install",
-    help="Install BenchFlow into a namespace and bootstrap Tekton, Grafana, RBAC, and PVCs.",
-    short_help="Install BenchFlow and cluster dependencies",
+    "bootstrap",
+    help=(
+        "Bootstrap BenchFlow into a namespace and install NFD, the NVIDIA GPU "
+        "Operator, Tekton, Grafana, RBAC, and PVCs."
+    ),
+    short_help="Bootstrap BenchFlow and cluster dependencies",
 )
 @click.option(
     "--repo-root",
@@ -415,8 +420,8 @@ def cmd_task_assert_status(args: argparse.Namespace) -> int:
     "--results-size",
     help="Requested size for the benchmark results PVC.",
 )
-def install_command(**kwargs: object) -> int:
-    return invoke_handler(cmd_install, **kwargs)
+def bootstrap_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_bootstrap, **kwargs)
 
 
 @click.group(
@@ -511,9 +516,9 @@ def deploy_group() -> None:
 )
 @runtime_plan_source_options
 @click.option(
-    "--source-dir",
+    "--workspace-dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    help="Existing llm-d checkout to reuse.",
+    help="Directory where llm-d will be cloned and patched for deployment.",
 )
 @click.option(
     "--manifests-dir",

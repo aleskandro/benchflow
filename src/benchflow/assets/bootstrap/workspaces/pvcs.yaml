@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-storage
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/purpose: model-cache
+spec:
+  accessModes:
+    - "{{ MODELS_STORAGE_ACCESS_MODE }}"
+  storageClassName: "{{ MODELS_STORAGE_CLASS }}"
+  resources:
+    requests:
+      storage: "{{ MODELS_STORAGE_SIZE }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: benchmark-results
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/purpose: benchmark-results
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "{{ RESULTS_STORAGE_CLASS }}"
+  resources:
+    requests:
+      storage: "{{ RESULTS_STORAGE_SIZE }}"

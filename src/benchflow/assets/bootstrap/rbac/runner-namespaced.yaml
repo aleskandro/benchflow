@@ -1,0 +1,61 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: benchflow-runner-llmd-apis
+  namespace: "{{ BENCHFLOW_NAMESPACE }}"
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/purpose: runner-rbac
+rules:
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  - apiGroups: ["inference.networking.x-k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  - apiGroups: ["llm-d.ai"]
+    resources: ["*"]
+    verbs: ["*"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["*"]
+  - apiGroups: ["telemetry.istio.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: benchflow-runner-admin
+  namespace: "{{ BENCHFLOW_NAMESPACE }}"
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/purpose: runner-rbac
+subjects:
+  - kind: ServiceAccount
+    name: benchflow-runner
+    namespace: "{{ BENCHFLOW_NAMESPACE }}"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: benchflow-runner-llmd-apis
+  namespace: "{{ BENCHFLOW_NAMESPACE }}"
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/purpose: runner-rbac
+subjects:
+  - kind: ServiceAccount
+    name: benchflow-runner
+    namespace: "{{ BENCHFLOW_NAMESPACE }}"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: benchflow-runner-llmd-apis

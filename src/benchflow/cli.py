@@ -11,8 +11,8 @@ from .commands.profiles import profiles_group
 from .commands.runtime import (
     artifacts_group,
     benchmark_group,
+    bootstrap_command,
     deploy_group,
-    install_command,
     metrics_group,
     mlflow_group,
     model_group,
@@ -35,13 +35,13 @@ CONTEXT_SETTINGS = {
 @click.group(
     context_settings=CONTEXT_SETTINGS,
     help=(
-        "BenchFlow installs the cluster prerequisites and runs LLM inference "
+        "BenchFlow bootstraps cluster prerequisites and runs LLM inference "
         "benchmarks from experiment files or direct CLI flags."
     ),
     epilog=(
         "\b\n"
         "Examples:\n"
-        "  bflow install\n"
+        "  bflow bootstrap\n"
         "  bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml\n"
         "  bflow experiment run --model Qwen/Qwen3-0.6B "
         "--deployment-profile llm-d-inference-scheduling "
@@ -71,7 +71,7 @@ def completion_command(shell: str) -> int:
     return 0
 
 
-cli.add_command(install_command)
+cli.add_command(bootstrap_command)
 cli.add_command(experiment_group)
 cli.add_command(repo_group)
 cli.add_command(model_group)

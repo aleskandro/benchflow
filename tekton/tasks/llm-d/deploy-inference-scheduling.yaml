@@ -35,7 +35,7 @@ spec:
         - llm-d
         - --run-plan-json
         - $(params.RUN_PLAN)
-        - --source-dir
+        - --workspace-dir
         - $(workspaces.source.path)
         - --manifests-dir
         - $(workspaces.manifests-storage.path)

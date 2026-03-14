@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: "{{ GRAFANA_NAMESPACE }}"
+  labels:
+    app.kubernetes.io/name: benchflow
+    benchflow.io/component: grafana
+data:
+  datasources.yaml: "{{ GRAFANA_DATASOURCES_YAML }}"
+  dashboards.yaml: "{{ GRAFANA_DASHBOARDS_YAML }}"

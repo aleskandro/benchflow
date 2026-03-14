@@ -17,21 +17,13 @@ from ..cluster import (
     run_json_command,
 )
 from ..models import ResolvedRunPlan
+from ..repository import clone_repo
 from ..ui import detail, step, success
 
 
 def _release_exists(namespace: str, release_name: str) -> bool:
     helm_json = run_json_command(["helm", "list", "-n", namespace, "-o", "json"])
     return any(entry.get("name") == f"ms-{release_name}" for entry in helm_json)
-
-
-def _git_clone(repo_url: str, repo_ref: str, target_dir: Path) -> None:
-    require_command("git")
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-    run_command(["git", "clone", repo_url, str(target_dir)])
-    run_command(["git", "checkout", repo_ref], cwd=target_dir)
 
 
 def _environment_name(plan: ResolvedRunPlan) -> str:
@@ -303,7 +295,7 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
 def deploy_llmd(
     plan: ResolvedRunPlan,
     *,
-    source_dir: Path | None = None,
+    workspace_dir: Path | None = None,
     manifests_dir: Path | None = None,
     pipeline_run_name: str = "",
     skip_if_exists: bool = True,
@@ -320,19 +312,24 @@ def deploy_llmd(
         success(
             f"Skipping deploy; Helm release ms-{plan.deployment.release_name} already exists"
         )
-        return source_dir.resolve() if source_dir else Path.cwd()
+        return workspace_dir.resolve() if workspace_dir else Path.cwd()
 
-    created_tempdir = source_dir is None
+    created_tempdir = workspace_dir is None
     checkout_root = (
-        source_dir
-        if source_dir is not None
+        workspace_dir
+        if workspace_dir is not None
         else Path(tempfile.mkdtemp(prefix="benchflow-llmd-"))
     )
     checkout_dir = checkout_root / "llm-d-repo"
     step(
         f"Cloning llm-d guide from {plan.deployment.repo_url} at {plan.deployment.repo_ref}"
     )
-    _git_clone(plan.deployment.repo_url, plan.deployment.repo_ref, checkout_dir)
+    clone_repo(
+        url=plan.deployment.repo_url,
+        revision=plan.deployment.repo_ref,
+        output_dir=checkout_dir,
+        delete_existing=True,
+    )
 
     guide_dir = checkout_dir / "guides" / "inference-scheduling"
     values_file = guide_dir / "ms-inference-scheduling" / "values.yaml"
