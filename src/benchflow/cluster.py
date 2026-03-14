@@ -145,6 +145,87 @@ def pipelinerun_state(pipelinerun: dict[str, Any]) -> tuple[str, bool, bool, str
     return (reason or "Running", False, False, message)
 
 
+def list_pipelineruns(
+    namespace: str, *, label_selector: str = ""
+) -> list[dict[str, Any]]:
+    require_command("oc")
+    argv = ["oc", "get", "pipelinerun", "-n", namespace]
+    if label_selector:
+        argv.extend(["-l", label_selector])
+    argv.extend(["-o", "json"])
+    payload = run_json_command(argv)
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        return []
+    return items
+
+
+def summarize_pipelinerun(pipelinerun: dict[str, Any]) -> dict[str, Any]:
+    metadata = pipelinerun.get("metadata", {})
+    labels = metadata.get("labels", {}) or {}
+    status, finished, succeeded, message = pipelinerun_state(pipelinerun)
+    status_payload = pipelinerun.get("status", {}) or {}
+    return {
+        "name": metadata.get("name", ""),
+        "namespace": metadata.get("namespace", ""),
+        "experiment": labels.get("benchflow.io/experiment", ""),
+        "platform": labels.get("benchflow.io/platform", ""),
+        "mode": labels.get("benchflow.io/mode", ""),
+        "pipeline": labels.get("tekton.dev/pipeline", ""),
+        "status": status,
+        "finished": finished,
+        "succeeded": succeeded,
+        "start_time": status_payload.get("startTime")
+        or metadata.get("creationTimestamp", ""),
+        "completion_time": status_payload.get("completionTime", ""),
+        "message": message,
+    }
+
+
+def list_benchflow_pipelineruns(
+    namespace: str, *, include_completed: bool = False
+) -> list[dict[str, Any]]:
+    items = list_pipelineruns(
+        namespace, label_selector="app.kubernetes.io/name=benchflow"
+    )
+    summaries = [summarize_pipelinerun(item) for item in items]
+    summaries.sort(key=lambda item: item.get("start_time") or "", reverse=True)
+    if include_completed:
+        return summaries
+    return [item for item in summaries if not item.get("finished")]
+
+
+def cancel_pipelinerun(namespace: str, name: str) -> None:
+    require_command("oc")
+    if shutil.which("tkn") is not None:
+        result = subprocess.run(
+            ["tkn", "pipelinerun", "cancel", "-n", namespace, name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+        warning(
+            "tkn pipelinerun cancel failed; falling back to oc patch: "
+            + (result.stderr.strip() or result.stdout.strip() or "unknown error")
+        )
+    run_command(
+        [
+            "oc",
+            "patch",
+            "pipelinerun",
+            name,
+            "-n",
+            namespace,
+            "--type",
+            "merge",
+            "-p",
+            '{"spec":{"status":"Cancelled"}}',
+        ]
+    )
+
+
 def follow_pipelinerun(namespace: str, name: str, *, poll_interval: int = 5) -> bool:
     require_command("oc")
 

@@ -354,6 +354,8 @@ def completion_candidates(words: list[str], cword: int) -> list[str]:
             return _matching_prefix(
                 list(_command_options(command, subcommand)), current_word
             )
+        if subcommand in {"list", "cancel"}:
+            return []
         return _complete_experiment_files(words, current_word)
 
     if command == "watch":

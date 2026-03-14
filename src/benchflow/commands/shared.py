@@ -316,6 +316,41 @@ def format_profile_list(entries: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def format_experiment_list(entries: list[dict[str, object]]) -> str:
+    if not entries:
+        return ""
+
+    status_width = max(
+        len("STATUS"), max(len(str(entry["status"])) for entry in entries)
+    )
+    name_width = max(
+        len("PIPELINERUN"), max(len(str(entry["name"])) for entry in entries)
+    )
+    experiment_width = max(
+        len("EXPERIMENT"), max(len(str(entry["experiment"])) for entry in entries)
+    )
+    platform_width = max(
+        len("PLATFORM"), max(len(str(entry["platform"])) for entry in entries)
+    )
+    mode_width = max(len("MODE"), max(len(str(entry["mode"])) for entry in entries))
+    started_width = max(
+        len("STARTED"), max(len(str(entry["start_time"])) for entry in entries)
+    )
+
+    lines = [
+        f"{'STATUS':<{status_width}}  {'PIPELINERUN':<{name_width}}  "
+        f"{'EXPERIMENT':<{experiment_width}}  {'PLATFORM':<{platform_width}}  "
+        f"{'MODE':<{mode_width}}  {'STARTED':<{started_width}}",
+    ]
+    for entry in entries:
+        lines.append(
+            f"{entry['status']:<{status_width}}  {entry['name']:<{name_width}}  "
+            f"{entry['experiment']:<{experiment_width}}  {entry['platform']:<{platform_width}}  "
+            f"{entry['mode']:<{mode_width}}  {entry['start_time']:<{started_width}}"
+        )
+    return "\n".join(lines)
+
+
 def load_profile_document(profiles_dir: Path, name: str, kind: str | None) -> dict:
     entries = list_profile_entries(profiles_dir)
     matches = [
