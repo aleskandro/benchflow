@@ -68,12 +68,6 @@ spec:
               name: mlflow-s3-secret
               key: region
               optional: true
-        - name: MLFLOW_S3_ENDPOINT_URL
-          valueFrom:
-            secretKeyRef:
-              name: mlflow-s3-secret
-              key: endpoint-url
-              optional: true
         - name: BENCHFLOW_ARCHIVE_BASE_URL
           valueFrom:
             secretKeyRef:
