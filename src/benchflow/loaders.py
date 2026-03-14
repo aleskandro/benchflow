@@ -74,7 +74,7 @@ def load_experiment(path: Path) -> Experiment:
         model=parse_model_spec(spec.get("model") or {}),
         deployment_profile=str(spec.get("deployment_profile") or ""),
         benchmark_profile=str(spec.get("benchmark_profile") or ""),
-        metrics_profile=str(spec.get("metrics_profile", "default")),
+        metrics_profile=str(spec.get("metrics_profile", "detailed")),
         namespace=str(spec.get("namespace", "benchflow")),
         service_account=str(spec.get("service_account", "benchflow-runner")),
         ttl_seconds_after_finished=int(spec.get("ttl_seconds_after_finished", 3600)),
