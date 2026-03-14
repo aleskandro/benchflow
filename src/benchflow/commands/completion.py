@@ -56,7 +56,6 @@ OPTION_VALUE_CHOICES = {
     "--kind": ("deployment", "benchmark", "metrics"),
     "--format": ("yaml", "json", "table"),
     "--tekton-channel": ("latest",),
-    "--grafana-channel": ("v5",),
 }
 
 PATH_VALUE_OPTIONS = {
@@ -191,10 +190,6 @@ def _complete_for_option(
     if prev_word == "--tekton-channel":
         return _matching_prefix(
             list(OPTION_VALUE_CHOICES["--tekton-channel"]), current_word
-        )
-    if prev_word == "--grafana-channel":
-        return _matching_prefix(
-            list(OPTION_VALUE_CHOICES["--grafana-channel"]), current_word
         )
     if prev_word in PATH_VALUE_OPTIONS:
         return _complete_paths(current_word, root=Path.cwd())

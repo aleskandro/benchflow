@@ -68,7 +68,7 @@ spec:
           workspace: source
         - name: manifests-storage
           workspace: results
-          subPath: rendered-manifests
+          subPath: $(context.pipelineRun.name)/rendered-manifests
 
     - name: wait-for-endpoint
       runAfter: [deploy]
@@ -104,7 +104,7 @@ spec:
       workspaces:
         - name: results
           workspace: results
-          subPath: benchmark
+          subPath: $(context.pipelineRun.name)/benchmark
 
     - name: collect-artifacts
       runAfter: [benchmark]
@@ -124,7 +124,7 @@ spec:
       workspaces:
         - name: artifacts
           workspace: results
-          subPath: artifacts
+          subPath: $(context.pipelineRun.name)
 
     - name: collect-metrics
       runAfter: [collect-artifacts]
@@ -150,7 +150,7 @@ spec:
       workspaces:
         - name: artifacts
           workspace: results
-          subPath: artifacts
+          subPath: $(context.pipelineRun.name)
 
     - name: upload-to-mlflow
       runAfter: [collect-metrics]
@@ -176,7 +176,7 @@ spec:
       workspaces:
         - name: artifacts
           workspace: results
-          subPath: artifacts
+          subPath: $(context.pipelineRun.name)/artifacts
 
   finally:
     - name: cleanup

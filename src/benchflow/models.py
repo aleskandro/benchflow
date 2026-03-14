@@ -91,7 +91,7 @@ class ExperimentSpec:
     model: ModelSpec
     deployment_profile: str
     benchmark_profile: str
-    metrics_profile: str = "default"
+    metrics_profile: str = "detailed"
     namespace: str = "benchflow"
     service_account: str = "benchflow-runner"
     ttl_seconds_after_finished: int = 3600

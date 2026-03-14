@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import secrets
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -36,8 +39,6 @@ class InstallOptions:
     install_tekton: bool = True
     install_grafana: bool = True
     tekton_channel: str = "latest"
-    grafana_channel: str = "v5"
-    grafana_starting_csv: str = "grafana-operator.v5.21.2"
     models_storage_access_mode: str = "ReadWriteOnce"
     models_storage_size: str = "250Gi"
     models_storage_class: str | None = None
@@ -48,15 +49,18 @@ class InstallOptions:
 class Installer:
     pipelines_operator_namespace = "openshift-operators"
     pipelines_runtime_namespace = "openshift-pipelines"
-    grafana_operator_name = "grafana-operator"
     grafana_admin_secret_name = "grafana-admin-credentials"
-    grafana_datasource_service_account = "benchflow-grafana-datasource"
+    grafana_datasource_service_account = "benchflow-grafana"
     grafana_datasource_token_secret = "benchflow-grafana-datasource-token"
 
     def __init__(self, repo_root: Path, options: InstallOptions) -> None:
         self.repo_root = repo_root.resolve()
         self.options = options
         self._default_storage_class_name: str | None = None
+
+    @property
+    def grafana_namespace(self) -> str:
+        return f"{self.options.namespace}-grafana"
 
     def run(self) -> int:
         self.ensure_cluster_access()
@@ -70,7 +74,9 @@ class Installer:
         self.ensure_default_storage_class_if_needed(
             self.options.results_storage_class, "benchmark-results"
         )
-        self.ensure_namespace()
+        self.ensure_namespace(self.options.namespace)
+        if self.options.install_grafana:
+            self.ensure_namespace(self.grafana_namespace)
 
         self.print_intro()
 
@@ -90,11 +96,10 @@ class Installer:
             "Configuration",
             (
                 ("Namespace", options.namespace),
+                ("Grafana namespace", self.grafana_namespace),
                 ("Install Tekton if missing", str(options.install_tekton).lower()),
                 ("Install Grafana if missing", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
-                ("Grafana operator channel", options.grafana_channel),
-                ("Grafana operator CSV", options.grafana_starting_csv),
                 (
                     "models-storage",
                     f"{options.models_storage_access_mode} {options.models_storage_size}"
@@ -107,7 +112,7 @@ class Installer:
                 ),
                 (
                     "metrics access",
-                    "cluster-monitoring-view -> benchflow-runner, benchflow-grafana-datasource",
+                    "cluster-monitoring-view -> benchflow-runner, benchflow-grafana",
                 ),
             ),
         )
@@ -132,11 +137,10 @@ class Installer:
             "BenchFlow",
             (
                 ("Namespace", options.namespace),
+                ("Grafana namespace", self.grafana_namespace),
                 ("Tekton install attempted", str(options.install_tekton).lower()),
                 ("Grafana install attempted", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
-                ("Grafana operator channel", options.grafana_channel),
-                ("Grafana operator CSV", options.grafana_starting_csv),
                 (
                     "models-storage",
                     f"{options.models_storage_access_mode} {options.models_storage_size}"
@@ -149,7 +153,7 @@ class Installer:
                 ),
                 (
                     "metrics access",
-                    "cluster-monitoring-view bound to benchflow-runner and benchflow-grafana-datasource",
+                    "cluster-monitoring-view bound to benchflow-runner and benchflow-grafana",
                 ),
                 (
                     "Grafana route",
@@ -160,8 +164,8 @@ class Installer:
         if grafana_host:
             detail(
                 "Grafana admin password: "
-                f"oc get secret -n {options.namespace} {self.grafana_admin_secret_name} "
-                '-o go-template=\'{{index .data "GF_SECURITY_ADMIN_PASSWORD" | base64decode}}{{"\\n"}}\''
+                f"oc get secret -n {self.grafana_namespace} {self.grafana_admin_secret_name} "
+                '-o go-template=\'{{index .data "admin-password" | base64decode}}{{"\\n"}}\''
             )
         step("Required secrets if you have not already created them")
         detail("config/cluster/secrets/huggingface-token.example.yaml")
@@ -170,7 +174,7 @@ class Installer:
         step("Example run")
         detail("pip install -e .")
         detail(
-            f"bflow experiment run experiments/examples/qwen3-06b-llm-d-smoke.yaml --namespace {options.namespace}"
+            f"bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml --namespace {options.namespace}"
         )
 
     def _is_connectivity_error(self, output: str) -> bool:
@@ -323,15 +327,15 @@ class Installer:
         require_command("oc")
         self._oc("whoami", retry=True, description="verifying cluster access")
 
-    def ensure_namespace(self) -> None:
-        if not self._resource_exists("get", "namespace", self.options.namespace):
-            step(f"Creating namespace {self.options.namespace}")
+    def ensure_namespace(self, namespace_name: str) -> None:
+        if not self._resource_exists("get", "namespace", namespace_name):
+            step(f"Creating namespace {namespace_name}")
             self._oc(
                 "create",
                 "namespace",
-                self.options.namespace,
+                namespace_name,
                 retry=True,
-                description=f"creating namespace {self.options.namespace}",
+                description=f"creating namespace {namespace_name}",
                 echo_output=True,
             )
             return
@@ -339,31 +343,31 @@ class Installer:
         namespace = self._oc_json(
             "get",
             "namespace",
-            self.options.namespace,
+            namespace_name,
             retry=True,
-            description=f"reading namespace/{self.options.namespace}",
+            description=f"reading namespace/{namespace_name}",
         )
         deletion_timestamp = namespace.get("metadata", {}).get("deletionTimestamp")
         if not deletion_timestamp:
             return
 
-        step(f"Waiting for namespace {self.options.namespace} to finish terminating")
+        step(f"Waiting for namespace {namespace_name} to finish terminating")
         deadline = time.time() + 600
         while time.time() < deadline:
-            if not self._resource_exists("get", "namespace", self.options.namespace):
-                step(f"Creating namespace {self.options.namespace}")
+            if not self._resource_exists("get", "namespace", namespace_name):
+                step(f"Creating namespace {namespace_name}")
                 self._oc(
                     "create",
                     "namespace",
-                    self.options.namespace,
+                    namespace_name,
                     retry=True,
-                    description=f"creating namespace {self.options.namespace}",
+                    description=f"creating namespace {namespace_name}",
                     echo_output=True,
                 )
                 return
             time.sleep(5)
         raise CommandError(
-            f"timed out waiting for namespace {self.options.namespace} to finish terminating"
+            f"timed out waiting for namespace {namespace_name} to finish terminating"
         )
 
     def ensure_storage_class(self, storage_class: str | None, label: str) -> None:
@@ -760,132 +764,14 @@ class Installer:
                 success(f"Granted privileged SCC to {service_account}")
 
     def install_grafana_if_needed(self) -> None:
-        subscription_already_present = self._resource_exists(
-            "get",
-            "subscription",
-            self.grafana_operator_name,
-            "-n",
-            self.options.namespace,
-        )
-        if subscription_already_present:
-            success(
-                f"Grafana operator subscription already present in {self.options.namespace}; reconciling desired version"
+        if not self.options.install_grafana:
+            detail(
+                "Skipping Grafana install because --skip-grafana-install was requested"
             )
-        else:
-            if not self.options.install_grafana:
-                raise CommandError(
-                    "Grafana operator is not installed in the target namespace and "
-                    "--skip-grafana-install was requested"
-                )
-            step(f"Installing Grafana operator in {self.options.namespace}")
-
-        operator_group = {
-            "apiVersion": "operators.coreos.com/v1",
-            "kind": "OperatorGroup",
-            "metadata": {
-                "name": "benchflow-grafana",
-                "namespace": self.options.namespace,
-            },
-            "spec": {"targetNamespaces": [self.options.namespace]},
-        }
-        subscription = {
-            "apiVersion": "operators.coreos.com/v1alpha1",
-            "kind": "Subscription",
-            "metadata": {
-                "name": self.grafana_operator_name,
-                "namespace": self.options.namespace,
-            },
-            "spec": {
-                "channel": self.options.grafana_channel,
-                "installPlanApproval": "Manual",
-                "name": self.grafana_operator_name,
-                "source": "community-operators",
-                "sourceNamespace": "openshift-marketplace",
-                "startingCSV": self.options.grafana_starting_csv,
-            },
-        }
-        self._apply_documents(
-            [operator_group, subscription],
-            namespace=self.options.namespace,
-            description="applying Grafana operator resources",
+            return
+        success(
+            f"Grafana will be installed directly in namespace {self.grafana_namespace}"
         )
-
-        step("Waiting for the Grafana subscription to resolve")
-        grafana_csv = self._wait_for_subscription_current_csv(
-            subscription_name=self.grafana_operator_name,
-            namespace=self.options.namespace,
-            timeout_seconds=600,
-        )
-        subscription = self._get_subscription(
-            subscription_name=self.grafana_operator_name,
-            namespace=self.options.namespace,
-            description=f"reading subscription/{self.grafana_operator_name} after resolution",
-        )
-        installed_grafana_csv = str(
-            subscription.get("status", {}).get("installedCSV", "") or ""
-        )
-        subscription_state = str(subscription.get("status", {}).get("state", "") or "")
-        expected_csv_name = self.options.grafana_starting_csv
-        if grafana_csv != self.options.grafana_starting_csv:
-            if subscription_already_present:
-                if (
-                    installed_grafana_csv == self.options.grafana_starting_csv
-                    and subscription_state == "UpgradePending"
-                ):
-                    warning(
-                        "Grafana operator is already installed as "
-                        f"{installed_grafana_csv}; a newer unapproved upgrade "
-                        f"({grafana_csv}) is pending, but BenchFlow will continue "
-                        f"with the pinned installed version"
-                    )
-                    grafana_csv = installed_grafana_csv
-                else:
-                    warning(
-                        "Grafana operator is already installed as "
-                        f"{grafana_csv}; BenchFlow will keep the existing version "
-                        f"instead of forcing a downgrade to {self.options.grafana_starting_csv}"
-                    )
-                expected_csv_name = grafana_csv
-            else:
-                self._print_olm_diagnostics(
-                    subscription_name=self.grafana_operator_name,
-                    namespace=self.options.namespace,
-                    catalog_source="community-operators",
-                )
-                raise CommandError(
-                    "Grafana subscription resolved to an unexpected CSV: "
-                    f"wanted {self.options.grafana_starting_csv}, got {grafana_csv}"
-                )
-        if (
-            subscription_already_present
-            and grafana_csv == self.options.grafana_starting_csv
-            and installed_grafana_csv == self.options.grafana_starting_csv
-            and subscription_state == "UpgradePending"
-        ):
-            success(
-                f"Grafana operator {installed_grafana_csv} is already installed; skipping CSV phase wait despite pending upgrade"
-            )
-        else:
-            step(f"Waiting for CSV {grafana_csv} to succeed")
-            self._wait_for_csv_succeeded(
-                subscription_name=self.grafana_operator_name,
-                namespace=self.options.namespace,
-                csv_name=grafana_csv,
-                timeout_seconds=600,
-                csv_prefix="grafana-operator.",
-                catalog_source="community-operators",
-                expected_csv_name=expected_csv_name,
-            )
-
-        step("Waiting for Grafana CRDs")
-        for crd in (
-            "crd/grafanas.grafana.integreatly.org",
-            "crd/grafanadashboards.grafana.integreatly.org",
-            "crd/grafanadatasources.grafana.integreatly.org",
-        ):
-            self._wait_for_resource(
-                resource=crd, namespace=None, timeout_seconds=600, label=crd
-            )
 
     def install_real_secrets(self) -> None:
         secrets_dir = self.repo_root / "config" / "cluster" / "secrets"
@@ -1192,13 +1078,13 @@ class Installer:
         )
 
     def discover_grafana_route_host(self) -> str | None:
-        if not self._resource_exists("get", "route", "-n", self.options.namespace):
+        if not self._resource_exists("get", "route", "-n", self.grafana_namespace):
             return None
         routes = self._oc_json(
             "get",
             "route",
             "-n",
-            self.options.namespace,
+            self.grafana_namespace,
             retry=True,
             description="reading routes",
         )
@@ -1220,35 +1106,33 @@ class Installer:
 
     def wait_for_grafana_ready(self, timeout_seconds: int) -> None:
         deadline = time.time() + timeout_seconds
-        last_message = ""
         while time.time() < deadline:
             if not self._resource_exists(
-                "get", "grafana", "grafana", "-n", self.options.namespace
+                "get", "deployment", "grafana", "-n", self.grafana_namespace
             ):
                 time.sleep(5)
                 continue
-            grafana = self._oc_json(
+            deployment = self._oc_json(
                 "get",
-                "grafana",
+                "deployment",
                 "grafana",
                 "-n",
-                self.options.namespace,
+                self.grafana_namespace,
                 retry=True,
-                description="reading grafana/grafana",
+                description="reading deployment/grafana",
             )
-            status = grafana.get("status", {})
-            stage = str(status.get("stage", "")).lower()
-            stage_status = str(status.get("stageStatus", "")).lower()
-            last_message = str(status.get("lastMessage", ""))
-            if stage == "complete" and stage_status == "success":
+            status = deployment.get("status", {}) or {}
+            ready = int(status.get("readyReplicas", 0) or 0)
+            desired = int(status.get("replicas", 0) or 0)
+            if desired > 0 and ready >= desired:
                 return
             time.sleep(5)
-        suffix = f": {last_message}" if last_message else ""
-        raise CommandError(
-            f"timed out waiting for grafana/grafana to become ready{suffix}"
-        )
+        raise CommandError("timed out waiting for deployment/grafana to become ready")
 
     def apply_grafana_stack(self) -> None:
+        if not self.options.install_grafana:
+            return
+
         step("Applying Grafana monitoring RBAC")
         self._apply_documents(
             [
@@ -1279,7 +1163,7 @@ class Installer:
                     "type": "kubernetes.io/service-account-token",
                 },
             ],
-            namespace=self.options.namespace,
+            namespace=self.grafana_namespace,
             description="applying Grafana service account resources",
         )
         self._apply_documents(
@@ -1298,7 +1182,7 @@ class Installer:
                         {
                             "kind": "ServiceAccount",
                             "name": self.grafana_datasource_service_account,
-                            "namespace": self.options.namespace,
+                            "namespace": self.grafana_namespace,
                         }
                     ],
                     "roleRef": {
@@ -1314,74 +1198,89 @@ class Installer:
         self._wait_for_secret_key(
             name=self.grafana_datasource_token_secret,
             key="token",
-            namespace=self.options.namespace,
+            namespace=self.grafana_namespace,
             timeout_seconds=300,
         )
-
-        step("Applying Grafana instance and route")
-        self._apply_documents(
-            [
-                {
-                    "apiVersion": "grafana.integreatly.org/v1beta1",
-                    "kind": "Grafana",
-                    "metadata": {
-                        "name": "grafana",
-                        "labels": {
-                            "dashboards": "benchflow",
-                            "folders": "benchflow",
-                            "app.kubernetes.io/name": "benchflow",
-                            "benchflow.io/component": "grafana",
+        if not self._resource_exists(
+            "get",
+            "secret",
+            self.grafana_admin_secret_name,
+            "-n",
+            self.grafana_namespace,
+        ):
+            self._apply_documents(
+                [
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Secret",
+                        "metadata": {
+                            "name": self.grafana_admin_secret_name,
+                            "labels": {
+                                "app.kubernetes.io/name": "benchflow",
+                                "benchflow.io/component": "grafana",
+                            },
                         },
-                    },
-                    "spec": {
-                        "config": {
-                            "log": {"mode": "console"},
-                            "auth": {"disable_login_form": "false"},
+                        "type": "Opaque",
+                        "stringData": {
+                            "admin-user": "admin",
+                            "admin-password": secrets.token_urlsafe(24),
                         },
-                        "route": {"spec": {}},
-                    },
-                }
-            ],
-            namespace=self.options.namespace,
-            description="applying Grafana instance",
-        )
-        step("Waiting for Grafana route")
-        self.wait_for_grafana_route(timeout_seconds=600)
-        step("Waiting for Grafana to become ready")
-        self.wait_for_grafana_ready(timeout_seconds=600)
+                    }
+                ],
+                namespace=self.grafana_namespace,
+                description="applying Grafana admin credentials",
+            )
 
-        dashboard_json = (
+        dashboard_live_json = (
             self.repo_root
             / "config"
             / "monitoring"
             / "grafana-dashboard-benchflow.json"
         ).read_text(encoding="utf-8")
-        documents = [
+        dashboard_archive_json = (
+            self.repo_root
+            / "config"
+            / "monitoring"
+            / "grafana-dashboard-benchflow-archive.json"
+        ).read_text(encoding="utf-8")
+        archive_base_url = ""
+        if self._resource_exists(
+            "get", "secret", "mlflow-s3-secret", "-n", self.options.namespace
+        ):
+            mlflow_secret = self._oc_json(
+                "get",
+                "secret",
+                "mlflow-s3-secret",
+                "-n",
+                self.options.namespace,
+                retry=True,
+                description="reading secret/mlflow-s3-secret",
+            )
+            encoded = str(
+                mlflow_secret.get("data", {}).get("public-base-url", "") or ""
+            )
+            if encoded:
+                archive_base_url = base64.b64decode(encoded).decode("utf-8")
+        if not archive_base_url:
+            warning(
+                "mlflow-s3-secret does not define public-base-url; "
+                "the archive dashboard will need that HTTP(S) MLflow artifact root "
+                "configured before Infinity queries can succeed"
+            )
+            archive_base_url = "https://example.invalid/mlflow"
+        archive_allowed_host = (
+            f"{urlsplit(archive_base_url).scheme}://{urlsplit(archive_base_url).netloc}"
+            if urlsplit(archive_base_url).netloc
+            else archive_base_url
+        )
+
+        datasources_yaml = yaml.safe_dump(
             {
-                "apiVersion": "grafana.integreatly.org/v1beta1",
-                "kind": "GrafanaDatasource",
-                "metadata": {
-                    "name": "openshift-monitoring",
-                    "labels": {
-                        "app.kubernetes.io/name": "benchflow",
-                        "benchflow.io/component": "grafana",
-                    },
-                },
-                "spec": {
-                    "instanceSelector": {"matchLabels": {"dashboards": "benchflow"}},
-                    "valuesFrom": [
-                        {
-                            "targetPath": "secureJsonData.httpHeaderValue1",
-                            "valueFrom": {
-                                "secretKeyRef": {
-                                    "name": self.grafana_datasource_token_secret,
-                                    "key": "token",
-                                }
-                            },
-                        }
-                    ],
-                    "datasource": {
+                "apiVersion": 1,
+                "datasources": [
+                    {
                         "name": "openshift-monitoring",
+                        "uid": "openshift-monitoring",
                         "type": "prometheus",
                         "access": "proxy",
                         "url": "https://thanos-querier.openshift-monitoring.svc:9091",
@@ -1392,34 +1291,241 @@ class Installer:
                             "httpHeaderName1": "Authorization",
                         },
                         "secureJsonData": {
-                            "httpHeaderValue1": "Bearer ${token}",
+                            "httpHeaderValue1": "Bearer ${GRAFANA_THANOS_TOKEN}",
                         },
                     },
+                    {
+                        "name": "benchflow-archive",
+                        "uid": "benchflow-archive",
+                        "type": "yesoreyeram-infinity-datasource",
+                        "access": "proxy",
+                        "url": "${BENCHFLOW_ARCHIVE_BASE_URL}",
+                        "jsonData": {
+                            "allowedHosts": [archive_allowed_host],
+                        },
+                    },
+                ],
+            },
+            sort_keys=False,
+        )
+        dashboards_yaml = yaml.safe_dump(
+            {
+                "apiVersion": 1,
+                "providers": [
+                    {
+                        "name": "benchflow",
+                        "orgId": 1,
+                        "folder": "BenchFlow",
+                        "type": "file",
+                        "disableDeletion": False,
+                        "editable": True,
+                        "options": {"path": "/var/lib/grafana/dashboards"},
+                    }
+                ],
+            },
+            sort_keys=False,
+        )
+        documents = [
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "grafana-provisioning",
+                    "labels": {
+                        "app.kubernetes.io/name": "benchflow",
+                        "benchflow.io/component": "grafana",
+                    },
+                },
+                "data": {
+                    "datasources.yaml": datasources_yaml,
+                    "dashboards.yaml": dashboards_yaml,
                 },
             },
             {
-                "apiVersion": "grafana.integreatly.org/v1beta1",
-                "kind": "GrafanaDashboard",
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
                 "metadata": {
-                    "name": "benchflow",
+                    "name": "grafana-dashboards",
+                    "labels": {
+                        "app.kubernetes.io/name": "benchflow",
+                        "benchflow.io/component": "grafana",
+                    },
+                },
+                "data": {
+                    "benchflow-live.json": dashboard_live_json,
+                    "benchflow-archive.json": dashboard_archive_json,
+                },
+            },
+            {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "name": "grafana",
                     "labels": {
                         "app.kubernetes.io/name": "benchflow",
                         "benchflow.io/component": "grafana",
                     },
                 },
                 "spec": {
-                    "instanceSelector": {"matchLabels": {"dashboards": "benchflow"}},
-                    "json": dashboard_json,
+                    "replicas": 1,
+                    "selector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "benchflow",
+                            "benchflow.io/component": "grafana",
+                        }
+                    },
+                    "template": {
+                        "metadata": {
+                            "labels": {
+                                "app.kubernetes.io/name": "benchflow",
+                                "benchflow.io/component": "grafana",
+                            }
+                        },
+                        "spec": {
+                            "serviceAccountName": self.grafana_datasource_service_account,
+                            "containers": [
+                                {
+                                    "name": "grafana",
+                                    "image": "grafana/grafana:11.5.2",
+                                    "ports": [{"containerPort": 3000, "name": "http"}],
+                                    "env": [
+                                        {
+                                            "name": "GF_SECURITY_ADMIN_USER",
+                                            "valueFrom": {
+                                                "secretKeyRef": {
+                                                    "name": self.grafana_admin_secret_name,
+                                                    "key": "admin-user",
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "name": "GF_SECURITY_ADMIN_PASSWORD",
+                                            "valueFrom": {
+                                                "secretKeyRef": {
+                                                    "name": self.grafana_admin_secret_name,
+                                                    "key": "admin-password",
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "name": "GF_INSTALL_PLUGINS",
+                                            "value": "yesoreyeram-infinity-datasource",
+                                        },
+                                        {
+                                            "name": "GRAFANA_THANOS_TOKEN",
+                                            "valueFrom": {
+                                                "secretKeyRef": {
+                                                    "name": self.grafana_datasource_token_secret,
+                                                    "key": "token",
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "name": "BENCHFLOW_ARCHIVE_BASE_URL",
+                                            "value": archive_base_url,
+                                        },
+                                    ],
+                                    "volumeMounts": [
+                                        {
+                                            "name": "grafana-data",
+                                            "mountPath": "/var/lib/grafana",
+                                        },
+                                        {
+                                            "name": "provisioning",
+                                            "mountPath": "/etc/grafana/provisioning/datasources/datasources.yaml",
+                                            "subPath": "datasources.yaml",
+                                        },
+                                        {
+                                            "name": "provisioning",
+                                            "mountPath": "/etc/grafana/provisioning/dashboards/dashboards.yaml",
+                                            "subPath": "dashboards.yaml",
+                                        },
+                                        {
+                                            "name": "dashboards",
+                                            "mountPath": "/var/lib/grafana/dashboards",
+                                        },
+                                    ],
+                                    "readinessProbe": {
+                                        "httpGet": {
+                                            "path": "/api/health",
+                                            "port": "http",
+                                        },
+                                        "initialDelaySeconds": 10,
+                                        "periodSeconds": 10,
+                                    },
+                                    "livenessProbe": {
+                                        "httpGet": {
+                                            "path": "/api/health",
+                                            "port": "http",
+                                        },
+                                        "initialDelaySeconds": 30,
+                                        "periodSeconds": 30,
+                                    },
+                                }
+                            ],
+                            "volumes": [
+                                {
+                                    "name": "grafana-data",
+                                    "emptyDir": {},
+                                },
+                                {
+                                    "name": "provisioning",
+                                    "configMap": {"name": "grafana-provisioning"},
+                                },
+                                {
+                                    "name": "dashboards",
+                                    "configMap": {"name": "grafana-dashboards"},
+                                },
+                            ],
+                        },
+                    },
+                },
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {
+                    "name": "grafana",
+                    "labels": {
+                        "app.kubernetes.io/name": "benchflow",
+                        "benchflow.io/component": "grafana",
+                    },
+                },
+                "spec": {
+                    "selector": {
+                        "app.kubernetes.io/name": "benchflow",
+                        "benchflow.io/component": "grafana",
+                    },
+                    "ports": [{"name": "http", "port": 3000, "targetPort": "http"}],
+                },
+            },
+            {
+                "apiVersion": "route.openshift.io/v1",
+                "kind": "Route",
+                "metadata": {
+                    "name": "grafana",
+                    "labels": {
+                        "app.kubernetes.io/name": "benchflow",
+                        "benchflow.io/component": "grafana",
+                    },
+                },
+                "spec": {
+                    "to": {"kind": "Service", "name": "grafana"},
+                    "port": {"targetPort": "http"},
                 },
             },
         ]
 
-        step("Applying Grafana datasource and dashboard")
+        step("Applying Grafana deployment, route, datasource, and dashboards")
         self._apply_documents(
             documents,
-            namespace=self.options.namespace,
-            description="applying Grafana datasource and dashboard",
+            namespace=self.grafana_namespace,
+            description="applying Grafana stack",
         )
+        step("Waiting for Grafana route")
+        self.wait_for_grafana_route(timeout_seconds=600)
+        step("Waiting for Grafana to become ready")
+        self.wait_for_grafana_ready(timeout_seconds=600)
 
 
 def run_install(repo_root: Path, options: InstallOptions) -> int:

@@ -8,7 +8,7 @@ spec:
     revision: main
   deployment_profile: llm-d-inference-scheduling
   benchmark_profile: guidellm-smoke
-  metrics_profile: default
+  metrics_profile: detailed
   namespace: benchflow
   mlflow:
     experiment: benchflow-qwen

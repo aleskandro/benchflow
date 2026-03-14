@@ -57,8 +57,6 @@ def cmd_install(args: argparse.Namespace) -> int:
             install_tekton=not args.skip_tekton_install,
             install_grafana=not args.skip_grafana_install,
             tekton_channel=args.tekton_channel or "latest",
-            grafana_channel=args.grafana_channel or "v5",
-            grafana_starting_csv="grafana-operator.v5.21.2",
             models_storage_class=args.models_storage_class,
             models_storage_size=args.models_size or "250Gi",
             models_storage_access_mode=args.models_access_mode or "ReadWriteOnce",
@@ -373,15 +371,11 @@ def configure_install_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--skip-grafana-install",
         action="store_true",
-        help="Do not install the Grafana operator if it is missing.",
+        help="Do not install Grafana in the dedicated Grafana namespace.",
     )
     parser.add_argument(
         "--tekton-channel",
         help="OpenShift Pipelines operator channel.",
-    )
-    parser.add_argument(
-        "--grafana-channel",
-        help="Grafana operator channel.",
     )
     parser.add_argument(
         "--models-storage-class",
@@ -767,7 +761,6 @@ def runtime_command_options(
             "--skip-tekton-install",
             "--skip-grafana-install",
             "--tekton-channel",
-            "--grafana-channel",
             "--models-storage-class",
             "--models-size",
             "--models-access-mode",

@@ -71,6 +71,62 @@ def _summarize_series(result: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
+def _series_name(metric_name: str, metric_labels: dict[str, object]) -> str:
+    preferred = (
+        "pod",
+        "exported_pod",
+        "container",
+        "instance",
+        "device",
+        "gpu",
+        "model_name",
+    )
+    for key in preferred:
+        value = metric_labels.get(key)
+        if value:
+            return str(value)
+    if not metric_labels:
+        return metric_name
+    pairs = [
+        f"{key}={value}"
+        for key, value in sorted(metric_labels.items())
+        if key != "__name__"
+    ]
+    return ", ".join(pairs) if pairs else metric_name
+
+
+def _normalize_series(
+    metric_name: str, result: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for series in result:
+        metric_labels = series.get("metric") or {}
+        if not isinstance(metric_labels, dict):
+            metric_labels = {}
+        series_name = _series_name(metric_name, metric_labels)
+        values = series.get("values") or []
+        if not isinstance(values, list):
+            continue
+        for pair in values:
+            try:
+                timestamp = float(pair[0])
+                value = float(pair[1])
+            except (IndexError, TypeError, ValueError):
+                continue
+            normalized.append(
+                {
+                    "time": datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "timestamp": int(timestamp),
+                    "value": value,
+                    "series": series_name,
+                    "labels": metric_labels,
+                }
+            )
+    return normalized
+
+
 def collect_metrics(
     plan: ResolvedRunPlan,
     *,
@@ -82,8 +138,10 @@ def collect_metrics(
     end_time = _parse_iso8601(benchmark_end_time)
     metrics_dir = artifacts_dir / "metrics"
     raw_dir = metrics_dir / "raw"
+    prometheus_dir = metrics_dir / "prometheus"
     metrics_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
+    prometheus_dir.mkdir(parents=True, exist_ok=True)
     step(
         f"Collecting Prometheus metrics for {plan.deployment.release_name} "
         f"from {benchmark_start_time} to {benchmark_end_time}"
@@ -125,6 +183,13 @@ def collect_metrics(
 
     request_timeout = _parse_duration_seconds(plan.metrics.query_timeout) + 15
     query_metadata: dict[str, str] = {}
+    archive_index: dict[str, object] = {
+        "namespace": plan.deployment.namespace,
+        "release_name": plan.deployment.release_name,
+        "benchmark_start_time": start_time.isoformat().replace("+00:00", "Z"),
+        "benchmark_end_time": end_time.isoformat().replace("+00:00", "Z"),
+        "metrics": {},
+    }
     summary: dict[str, object] = {
         "namespace": plan.deployment.namespace,
         "release_name": plan.deployment.release_name,
@@ -178,6 +243,15 @@ def collect_metrics(
             continue
 
         (raw_dir / f"{metric_name}.json").write_text(
+            json.dumps(
+                _normalize_series(
+                    metric_name, payload.get("data", {}).get("result", [])
+                ),
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (prometheus_dir / f"{metric_name}.json").write_text(
             json.dumps(payload, indent=2), encoding="utf-8"
         )
         if payload.get("status") != "success":
@@ -191,6 +265,13 @@ def collect_metrics(
         metric_summary = _summarize_series(result)
         metric_summary["query"] = resolved_query
         summary["queries"][metric_name] = metric_summary
+        archive_index["metrics"][metric_name] = {
+            "query": resolved_query,
+            "series_count": metric_summary["series_count"],
+            "sample_count": metric_summary["sample_count"],
+            "path": f"metrics/raw/{metric_name}.json",
+            "prometheus_path": f"metrics/prometheus/{metric_name}.json",
+        }
         detail(
             f"{metric_name}: {metric_summary['series_count']} series, "
             f"{metric_summary['sample_count']} samples"
@@ -198,6 +279,9 @@ def collect_metrics(
 
     (metrics_dir / "resolved_queries.json").write_text(
         json.dumps(query_metadata, indent=2), encoding="utf-8"
+    )
+    (metrics_dir / "archive_index.json").write_text(
+        json.dumps(archive_index, indent=2), encoding="utf-8"
     )
     (metrics_dir / "metrics_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"

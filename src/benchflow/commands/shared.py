@@ -82,7 +82,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
             model=ModelSpec(name=""),
             deployment_profile="",
             benchmark_profile="",
-            metrics_profile="default",
+            metrics_profile="detailed",
             namespace="benchflow",
             service_account="benchflow-runner",
             ttl_seconds_after_finished=3600,
