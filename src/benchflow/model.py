@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .cluster import CommandError
 from .models import ResolvedRunPlan
+from .ui import detail, step, success, warning
 
 
 def _configure_huggingface_runtime() -> Path:
@@ -47,9 +48,15 @@ def download_model(
         / plan.deployment.model_storage.cache_dir.lstrip("/")
         / plan.model.pvc_directory_name
     )
+    step(f"Preparing model cache for {plan.model.name}")
+    detail(f"Target directory: {target_dir}")
     if skip_if_exists and _has_model_weights(target_dir):
+        success(
+            f"Skipping download; cached model weights already exist at {target_dir}"
+        )
         return target_dir
     if target_dir.exists():
+        warning(f"Removing incomplete cached model directory at {target_dir}")
         shutil.rmtree(target_dir)
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +65,11 @@ def download_model(
         from huggingface_hub import snapshot_download
 
         cache_dir = _configure_huggingface_runtime()
+        detail(f"Hugging Face cache directory: {cache_dir}")
+        step(
+            f"Downloading {plan.model.name}"
+            + (f" at revision {plan.model.revision}" if plan.model.revision else "")
+        )
 
         snapshot_download(
             repo_id=plan.model.name,
@@ -75,5 +87,6 @@ def download_model(
         raise CommandError(
             f"download completed but no model weights were found in {target_dir}"
         )
+    success(f"Downloaded model weights to {target_dir}")
 
     return target_dir

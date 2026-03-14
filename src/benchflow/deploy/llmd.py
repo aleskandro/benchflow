@@ -17,6 +17,7 @@ from ..cluster import (
     run_json_command,
 )
 from ..models import ResolvedRunPlan
+from ..ui import detail, step, success
 
 
 def _release_exists(namespace: str, release_name: str) -> bool:
@@ -258,21 +259,39 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
     namespace = plan.deployment.namespace
     release_name = plan.deployment.release_name
     deadline = time.time() + timeout_seconds
+    last_snapshot: tuple[int, int, bool] | None = None
+
+    step(
+        f"Waiting for llm-d deployment {release_name} in namespace {namespace} to become ready"
+    )
 
     while time.time() < deadline:
-        epp_ready, _, _ = _pods_ready(
+        epp_ready, epp_ready_count, epp_total = _pods_ready(
             namespace, f"inferencepool=gaie-{release_name}-epp", kubectl_cmd
         )
-        ms_ready, _, _ = _pods_ready(
+        ms_ready, ms_ready_count, ms_total = _pods_ready(
             namespace, "llm-d.ai/inference-serving=true", kubectl_cmd
         )
         if not ms_ready:
-            ms_ready, _, _ = _pods_ready(
+            ms_ready, ms_ready_count, ms_total = _pods_ready(
                 namespace, "llm-d.ai/inferenceServing=true", kubectl_cmd
             )
         gateway_ready = _gateway_exists(namespace, release_name, kubectl_cmd)
+        snapshot = (epp_ready_count, ms_ready_count, gateway_ready)
+
+        if snapshot != last_snapshot:
+            detail(
+                f"EPP pods ready: {epp_ready_count}/{epp_total}, "
+                f"model-service pods ready: {ms_ready_count}/{ms_total}, "
+                f"gateway present: {'yes' if gateway_ready else 'no'}"
+            )
+            last_snapshot = snapshot
 
         if epp_ready and ms_ready and gateway_ready:
+            success(
+                f"llm-d deployment {release_name} is ready "
+                f"(EPP {epp_ready_count}/{epp_total}, model-service {ms_ready_count}/{ms_total})"
+            )
             return
         time.sleep(10)
 
@@ -298,6 +317,9 @@ def deploy_llmd(
     if skip_if_exists and _release_exists(
         plan.deployment.namespace, plan.deployment.release_name
     ):
+        success(
+            f"Skipping deploy; Helm release ms-{plan.deployment.release_name} already exists"
+        )
         return source_dir.resolve() if source_dir else Path.cwd()
 
     created_tempdir = source_dir is None
@@ -307,6 +329,9 @@ def deploy_llmd(
         else Path(tempfile.mkdtemp(prefix="benchflow-llmd-"))
     )
     checkout_dir = checkout_root / "llm-d-repo"
+    step(
+        f"Cloning llm-d guide from {plan.deployment.repo_url} at {plan.deployment.repo_ref}"
+    )
     _git_clone(plan.deployment.repo_url, plan.deployment.repo_ref, checkout_dir)
 
     guide_dir = checkout_dir / "guides" / "inference-scheduling"
@@ -314,6 +339,8 @@ def deploy_llmd(
     if not values_file.exists():
         raise CommandError(f"expected llm-d guide file not found: {values_file}")
 
+    step(f"Patching llm-d guide values for release {plan.deployment.release_name}")
+    detail(f"Guide directory: {guide_dir}")
     values = _patch_values(plan, values_file)
     _apply_pipeline_labels(values, plan.deployment.release_name, pipeline_run_name)
     values_file.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
@@ -329,11 +356,17 @@ def deploy_llmd(
         "HELMFILE_ENVIRONMENT": _environment_name(plan),
     }
 
+    step("Initializing helmfile plugins")
     run_command(["helmfile", "init", "--force"], cwd=guide_dir, env=env)
 
     if manifests_dir is not None:
+        step(f"Capturing rendered manifests in {manifests_dir}")
         _capture_manifests(guide_dir, manifests_dir, plan.deployment.namespace, env)
 
+    step(
+        f"Applying helmfile environment {env['HELMFILE_ENVIRONMENT']} "
+        f"into namespace {plan.deployment.namespace}"
+    )
     run_command(
         [
             "helmfile",
@@ -348,8 +381,13 @@ def deploy_llmd(
         cwd=guide_dir,
         env=env,
     )
+    success(
+        f"Applied llm-d releases for {plan.deployment.release_name} in namespace "
+        f"{plan.deployment.namespace}"
+    )
 
     if plan.deployment.options.get("create_httproute", True):
+        step(f"Creating HTTPRoute llm-d-{plan.deployment.release_name}")
         _create_httproute(plan, kubectl_cmd)
 
     if verify:
