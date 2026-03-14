@@ -16,12 +16,19 @@ spec:
       default: ghcr.io/albertoperdomo2/benchflow/benchflow:latest
     - name: RUN_PLAN
       type: string
-  workspaces:
+    - name: MODELS_STORAGE_PVC
+      type: string
+      default: models-storage
+  volumes:
     - name: models-storage
-      description: PVC for storing downloaded models
+      persistentVolumeClaim:
+        claimName: $(params.MODELS_STORAGE_PVC)
   steps:
     - name: download-model
       image: $(params.IMAGE)
+      volumeMounts:
+        - name: models-storage
+          mountPath: /models-storage
       env:
         - name: HF_TOKEN
           valueFrom:
@@ -49,4 +56,4 @@ spec:
         - --run-plan-json
         - $(params.RUN_PLAN)
         - --models-storage-path
-        - $(workspaces.models-storage.path)
+        - /models-storage

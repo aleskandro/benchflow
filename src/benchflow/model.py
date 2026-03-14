@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from .cluster import CommandError
@@ -26,6 +27,15 @@ def _configure_huggingface_runtime() -> Path:
     return hf_home / "hub"
 
 
+def _has_model_weights(target_dir: Path) -> bool:
+    if not target_dir.is_dir():
+        return False
+    for pattern in ("*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"):
+        if any(target_dir.glob(pattern)):
+            return True
+    return False
+
+
 def download_model(
     plan: ResolvedRunPlan,
     *,
@@ -37,8 +47,10 @@ def download_model(
         / plan.deployment.model_storage.cache_dir.lstrip("/")
         / plan.model.pvc_directory_name
     )
-    if skip_if_exists and target_dir.exists():
+    if skip_if_exists and _has_model_weights(target_dir):
         return target_dir
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
@@ -59,5 +71,9 @@ def download_model(
         raise CommandError(
             f"failed to download model {plan.model.name}: {exc}"
         ) from exc
+    if not _has_model_weights(target_dir):
+        raise CommandError(
+            f"download completed but no model weights were found in {target_dir}"
+        )
 
     return target_dir

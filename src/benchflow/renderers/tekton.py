@@ -29,17 +29,15 @@ def render_pipelinerun(
             "ttlSecondsAfterFinished": plan.ttl_seconds_after_finished,
             "params": [
                 {"name": "RUN_PLAN", "value": run_plan_json},
+                {
+                    "name": "MODELS_STORAGE_PVC",
+                    "value": plan.deployment.model_storage.pvc_name,
+                },
             ],
             "workspaces": [
                 {
                     "name": "results",
                     "persistentVolumeClaim": {"claimName": "benchmark-results"},
-                },
-                {
-                    "name": "models-storage",
-                    "persistentVolumeClaim": {
-                        "claimName": plan.deployment.model_storage.pvc_name
-                    },
                 },
                 {"name": "source", "emptyDir": {}},
             ],

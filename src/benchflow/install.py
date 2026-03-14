@@ -1129,6 +1129,11 @@ class Installer:
                         "verbs": ["get", "patch", "update"],
                     },
                     {
+                        "apiGroups": [""],
+                        "resources": ["namespaces"],
+                        "verbs": ["create"],
+                    },
+                    {
                         "apiGroups": ["rbac.authorization.k8s.io"],
                         "resources": ["clusterroles", "clusterrolebindings"],
                         "verbs": ["*"],

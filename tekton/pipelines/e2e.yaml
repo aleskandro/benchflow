@@ -16,9 +16,11 @@ spec:
     - name: BENCHFLOW_IMAGE
       type: string
       default: ghcr.io/albertoperdomo2/benchflow/benchflow:latest
+    - name: MODELS_STORAGE_PVC
+      type: string
+      default: models-storage
   workspaces:
     - name: results
-    - name: models-storage
     - name: source
   tasks:
     - name: resolve-run-plan
@@ -43,9 +45,8 @@ spec:
           value: $(params.BENCHFLOW_IMAGE)
         - name: RUN_PLAN
           value: $(params.RUN_PLAN)
-      workspaces:
-        - name: models-storage
-          workspace: models-storage
+        - name: MODELS_STORAGE_PVC
+          value: $(params.MODELS_STORAGE_PVC)
 
     - name: deploy
       runAfter: [download-model]
