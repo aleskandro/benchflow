@@ -5,8 +5,7 @@ metadata:
 spec:
   description: >-
     Validate the immutable RUN_PLAN payload and expose only the stage flags
-    needed for pipeline gating. Unsupported platforms and benchmark tools fail
-    fast here.
+    needed for pipeline gating. Unsupported benchmark tools fail fast here.
   params:
     - name: IMAGE
       type: string

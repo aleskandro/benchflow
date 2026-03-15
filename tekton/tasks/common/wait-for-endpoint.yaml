@@ -8,7 +8,7 @@ metadata:
     tekton.dev/displayName: "Wait for HTTP Endpoint"
 spec:
   description: >-
-    Wait for the llm-d endpoint resolved from the run plan to become available.
+    Wait for the endpoint resolved from the run plan to become available.
   params:
     - name: IMAGE
       type: string

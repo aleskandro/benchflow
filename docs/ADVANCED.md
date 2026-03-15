@@ -25,6 +25,11 @@ bflow experiment validate my-experiment.yaml
 bflow experiment run my-experiment.yaml
 ```
 
+For `llm-d`, the normal path now includes a reversible platform setup
+step before deployment. BenchFlow applies the upstream gateway-provider
+prerequisites for the selected llm-d repo ref, records what it changed, and
+tears those changes down during cleanup.
+
 The advanced path is:
 
 ```bash
@@ -249,11 +254,13 @@ Current behavior:
 - `bflow experiment run` submits one supervisor PipelineRun
 - the supervisor runs the child combinations sequentially in the cluster
 - each child benchmark still creates its own MLflow run
+- if every child combination uses `llm-d` and keeps cleanup enabled, the
+  supervisor sets up llm-d once and tears it down once at the end
 
 So this is safe to submit and walk away from:
 
 ```bash
-bflow experiment run experiments/smoke/qwen3-06b-llm-d-matrix-smoke.yaml
+bflow experiment run experiments/smoke/qwen3-06b-matrix-smoke.yaml
 ```
 
 The shipped matrix smoke example intentionally produces two child runs.
@@ -303,6 +310,12 @@ Deploy:
 bflow deploy llm-d --run-plan-file runplan.json
 ```
 
+Set up llm-d explicitly:
+
+```bash
+bflow setup llm-d --run-plan-file runplan.json --state-path setup-state.json
+```
+
 Wait for readiness:
 
 ```bash
@@ -346,6 +359,12 @@ Cleanup:
 
 ```bash
 bflow undeploy llm-d --run-plan-file runplan.json
+```
+
+Tear down llm-d setup explicitly:
+
+```bash
+bflow teardown llm-d --run-plan-file runplan.json --state-path setup-state.json
 ```
 
 ## Monitoring and Results

@@ -7,7 +7,11 @@ from ..models import ResolvedRunPlan, ValidationError
 
 
 def render_pipelinerun(
-    plan: ResolvedRunPlan, pipeline_name: str = "benchflow-e2e"
+    plan: ResolvedRunPlan,
+    pipeline_name: str = "benchflow-e2e",
+    *,
+    setup_mode: str = "auto",
+    teardown: bool = True,
 ) -> dict[str, Any]:
     run_plan_json = json.dumps(plan.to_dict(), separators=(",", ":"), sort_keys=True)
 
@@ -33,6 +37,8 @@ def render_pipelinerun(
                     "name": "MODELS_STORAGE_PVC",
                     "value": plan.deployment.model_storage.pvc_name,
                 },
+                {"name": "SETUP_MODE", "value": setup_mode},
+                {"name": "TEARDOWN", "value": str(teardown).lower()},
             ],
             "workspaces": [
                 {

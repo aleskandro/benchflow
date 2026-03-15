@@ -10,6 +10,8 @@ For the full command reference and advanced workflows, see [docs/ADVANCED.md](do
 
 BenchFlow bootstraps the cluster resources it owns. That includes NFD, the NVIDIA GPU Operator, Tekton, Grafana, RBAC, PVCs, and the packaged Tekton tasks and pipelines. It currently supports `llm-d` and `rhoai` execution, leaves `rhaiis` as future work, and assumes an OpenShift cluster with cluster monitoring enabled and a reachable MLflow deployment backed by S3.
 
+For `llm-d`, BenchFlow also sets up the gateway-provider prerequisites automatically during a run and tears that reversible setup down during cleanup. Matrix runs that stay on `llm-d` hoist that step once for the whole supervisor run.
+
 ## Bootstrap
 
 Install the CLI from the repository root:

@@ -19,6 +19,12 @@ spec:
     - name: MODELS_STORAGE_PVC
       type: string
       default: models-storage
+    - name: SETUP_MODE
+      type: string
+      default: auto
+    - name: TEARDOWN
+      type: string
+      default: "true"
   workspaces:
     - name: results
     - name: source
@@ -32,8 +38,28 @@ spec:
         - name: RUN_PLAN
           value: $(params.RUN_PLAN)
 
-    - name: download-model
+    - name: setup-run-plan
       runAfter: [resolve-run-plan]
+      when:
+        - input: "$(tasks.resolve-run-plan.results.stage-deploy)"
+          operator: in
+          values: ["true"]
+      taskRef:
+        name: setup-run-plan
+      params:
+        - name: IMAGE
+          value: $(params.BENCHFLOW_IMAGE)
+        - name: RUN_PLAN
+          value: $(params.RUN_PLAN)
+        - name: SETUP_MODE
+          value: $(params.SETUP_MODE)
+      workspaces:
+        - name: state-storage
+          workspace: results
+          subPath: $(context.pipelineRun.name)/platform-state
+
+    - name: download-model
+      runAfter: [setup-run-plan]
       when:
         - input: "$(tasks.resolve-run-plan.results.stage-download)"
           operator: in
@@ -192,6 +218,12 @@ spec:
           value: $(params.BENCHFLOW_IMAGE)
         - name: RUN_PLAN
           value: $(params.RUN_PLAN)
+        - name: TEARDOWN
+          value: $(params.TEARDOWN)
+      workspaces:
+        - name: state-storage
+          workspace: results
+          subPath: $(context.pipelineRun.name)/platform-state
     - name: assert-benchmark-status
       when:
         - input: "$(tasks.resolve-run-plan.results.stage-benchmark)"

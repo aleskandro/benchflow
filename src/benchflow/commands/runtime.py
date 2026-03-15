@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -29,6 +31,7 @@ from ..metrics import collect_metrics
 from ..mlflow_upload import upload_to_mlflow
 from ..model import download_model
 from ..models import ValidationError
+from ..setup import load_setup_state, setup_llmd, teardown_llmd
 from ..repository import clone_repo
 from ..renderers.tekton import render_pipelinerun
 from ..tasking import assert_task_status, write_stage_results
@@ -52,6 +55,17 @@ def _resolved_target_url(args: argparse.Namespace) -> tuple[str, str]:
     )
     endpoint_path = args.endpoint_path or plan.deployment.target.path
     return target_url, endpoint_path
+
+
+def _teardown_requested(value: str | None, default: bool = True) -> bool:
+    if value is None:
+        return default
+    lowered = str(value).strip().lower()
+    if lowered in {"true", "1", "yes"}:
+        return True
+    if lowered in {"false", "0", "no"}:
+        return False
+    raise ValidationError(f"invalid teardown value: {value!r}")
 
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
@@ -100,6 +114,40 @@ def cmd_model_download(args: argparse.Namespace) -> int:
         skip_if_exists=not args.no_skip_if_exists,
     )
     print(target_dir)
+    return 0
+
+
+def cmd_setup_llmd(args: argparse.Namespace) -> int:
+    plan = load_runtime_plan(args)
+    require_platform(plan, "llm-d")
+    state = setup_llmd(
+        plan,
+        workspace_dir=Path(args.workspace_dir).resolve()
+        if args.workspace_dir
+        else None,
+        state_path=Path(args.state_path).resolve() if args.state_path else None,
+    )
+    if args.state_path:
+        print(Path(args.state_path).resolve())
+    else:
+        print(json.dumps(state, sort_keys=True))
+    return 0
+
+
+def cmd_teardown_llmd(args: argparse.Namespace) -> int:
+    plan = load_runtime_plan(args)
+    require_platform(plan, "llm-d")
+    state = load_setup_state(
+        Path(args.state_path).resolve() if args.state_path else None
+    )
+    teardown_llmd(
+        plan,
+        state,
+        workspace_dir=Path(args.workspace_dir).resolve()
+        if args.workspace_dir
+        else None,
+    )
+    print(plan.deployment.release_name)
     return 0
 
 
@@ -364,7 +412,6 @@ def cmd_mlflow_upload(args: argparse.Namespace) -> int:
 
 def cmd_task_resolve_run_plan(args: argparse.Namespace) -> int:
     plan = load_run_plan_from_sources(run_plan_json=args.run_plan_json)
-    require_platform(plan, "llm-d")
     if plan.benchmark.tool != "guidellm":
         raise ValidationError(
             f"unsupported benchmark tool: {plan.benchmark.tool}; only guidellm is implemented"
@@ -390,6 +437,44 @@ def cmd_task_resolve_run_plan(args: argparse.Namespace) -> int:
     )
     success("RunPlan resolved and stage outputs written")
     print("resolved")
+    return 0
+
+
+def cmd_task_setup_run_plan(args: argparse.Namespace) -> int:
+    plan = load_run_plan_from_sources(run_plan_json=args.run_plan_json)
+    state_path = Path(args.state_path).resolve() if args.state_path else None
+    setup_mode = str(args.setup_mode or "auto").strip().lower()
+
+    if setup_mode == "skip":
+        detail("Skipping platform setup because SETUP_MODE=skip")
+        if state_path is not None:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text("{}", encoding="utf-8")
+            print(state_path)
+        else:
+            print("{}")
+        return 0
+
+    if setup_mode != "auto":
+        raise ValidationError(
+            f"unsupported setup mode: {args.setup_mode!r}; expected auto or skip"
+        )
+
+    if plan.deployment.platform == "llm-d":
+        state = setup_llmd(plan, state_path=state_path)
+    else:
+        detail(
+            f"No platform setup implemented for {plan.deployment.platform}; continuing without changes"
+        )
+        state = {}
+        if state_path is not None:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text("{}", encoding="utf-8")
+
+    if state_path is not None:
+        print(state_path)
+    else:
+        print(json.dumps(state, sort_keys=True))
     return 0
 
 
@@ -428,25 +513,45 @@ def cmd_task_deploy_run_plan(args: argparse.Namespace) -> int:
 
 def cmd_task_cleanup_run_plan(args: argparse.Namespace) -> int:
     plan = load_run_plan_from_sources(run_plan_json=args.run_plan_json)
+    setup_state = load_setup_state(
+        Path(args.setup_state_path).resolve() if args.setup_state_path else None
+    )
+    teardown = _teardown_requested(args.teardown_text, default=True)
+    cleanup_error: Exception | None = None
 
     if plan.deployment.platform == "llm-d":
-        cleanup_llmd(
-            plan,
-            wait_for_deletion=not args.no_wait,
-            timeout_seconds=args.timeout_seconds,
-            skip_if_not_exists=not args.no_skip_if_not_exists,
-        )
+        try:
+            cleanup_llmd(
+                plan,
+                wait_for_deletion=not args.no_wait,
+                timeout_seconds=args.timeout_seconds,
+                skip_if_not_exists=not args.no_skip_if_not_exists,
+            )
+        except Exception as exc:  # pragma: no cover - cleanup fallback path
+            cleanup_error = exc
+        if teardown:
+            teardown_llmd(plan, setup_state)
     elif plan.deployment.platform == "rhoai":
-        cleanup_rhoai(
-            plan,
-            wait_for_deletion=not args.no_wait,
-            timeout_seconds=args.timeout_seconds,
-            skip_if_not_exists=not args.no_skip_if_not_exists,
-        )
+        try:
+            cleanup_rhoai(
+                plan,
+                wait_for_deletion=not args.no_wait,
+                timeout_seconds=args.timeout_seconds,
+                skip_if_not_exists=not args.no_skip_if_not_exists,
+            )
+        except Exception as exc:  # pragma: no cover - cleanup fallback path
+            cleanup_error = exc
+        if teardown:
+            detail(
+                "No platform teardown implemented for rhoai; cleanup removed only scenario resources"
+            )
     else:
         raise ValidationError(
             f"unsupported deployment platform: {plan.deployment.platform}"
         )
+
+    if cleanup_error is not None:
+        raise cleanup_error
 
     print(plan.deployment.release_name)
     return 0
@@ -489,27 +594,58 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     )
     failures: list[str] = []
     total = len(plans)
+    setup_state: dict[str, Any] = {}
+    setup_hoisted = False
+    setup_state_dir: tempfile.TemporaryDirectory[str] | None = None
+    setup_state_path: Path | None = None
 
-    for index, plan in enumerate(plans, start=1):
-        descriptor = (
-            f"deployment={plan.profiles.deployment}, "
-            f"benchmark={plan.profiles.benchmark}, "
-            f"metrics={plan.profiles.metrics}"
-        )
-        step(f"[{index}/{total}] Submitting child PipelineRun")
-        detail(descriptor)
-        manifest = render_pipelinerun(plan, pipeline_name=args.child_pipeline_name)
-        submitted = create_manifest(dump_yaml(manifest), plan.deployment.namespace)
-        name = str(submitted.get("metadata", {}).get("name") or "")
-        if not name:
-            raise ValidationError("child PipelineRun submission returned no name")
-        detail(f"Created PipelineRun {name} in namespace {plan.deployment.namespace}")
-        succeeded = follow_pipelinerun(plan.deployment.namespace, name)
-        if succeeded:
-            success(f"[{index}/{total}] {name} succeeded")
-            continue
-        warning(f"[{index}/{total}] {name} failed")
-        failures.append(name)
+    if (
+        {plan.deployment.platform for plan in plans} == {"llm-d"}
+        and all(plan.stages.deploy for plan in plans)
+        and all(plan.stages.cleanup for plan in plans)
+    ):
+        step("Setting up llm-d platform once for the whole matrix")
+        setup_state_dir = tempfile.TemporaryDirectory(prefix="benchflow-matrix-setup-")
+        setup_state_path = Path(setup_state_dir.name) / "setup-state.json"
+        setup_hoisted = True
+        setup_state = setup_llmd(plans[0], state_path=setup_state_path)
+
+    try:
+        for index, plan in enumerate(plans, start=1):
+            descriptor = (
+                f"deployment={plan.profiles.deployment}, "
+                f"benchmark={plan.profiles.benchmark}, "
+                f"metrics={plan.profiles.metrics}"
+            )
+            step(f"[{index}/{total}] Submitting child PipelineRun")
+            detail(descriptor)
+            manifest = render_pipelinerun(
+                plan,
+                pipeline_name=args.child_pipeline_name,
+                setup_mode="skip" if setup_hoisted else "auto",
+                teardown=False if setup_hoisted else True,
+            )
+            submitted = create_manifest(dump_yaml(manifest), plan.deployment.namespace)
+            name = str(submitted.get("metadata", {}).get("name") or "")
+            if not name:
+                raise ValidationError("child PipelineRun submission returned no name")
+            detail(
+                f"Created PipelineRun {name} in namespace {plan.deployment.namespace}"
+            )
+            succeeded = follow_pipelinerun(plan.deployment.namespace, name)
+            if succeeded:
+                success(f"[{index}/{total}] {name} succeeded")
+                continue
+            warning(f"[{index}/{total}] {name} failed")
+            failures.append(name)
+    finally:
+        if setup_hoisted:
+            step("Tearing down hoisted llm-d platform setup")
+            if setup_state_path is not None:
+                setup_state = load_setup_state(setup_state_path)
+            teardown_llmd(plans[0], setup_state)
+        if setup_state_dir is not None:
+            setup_state_dir.cleanup()
 
     if failures:
         raise ValidationError(
@@ -652,6 +788,65 @@ def model_group() -> None:
 )
 def model_download(**kwargs: object) -> int:
     return invoke_handler(cmd_model_download, **kwargs)
+
+
+@click.group(
+    "setup",
+    help="Setup platform prerequisites for a resolved BenchFlow RunPlan.",
+    short_help="Platform setup",
+)
+def setup_group() -> None:
+    pass
+
+
+@setup_group.command(
+    "llm-d",
+    help="Setup llm-d gateway prerequisites from a resolved RunPlan.",
+    short_help="Setup llm-d prerequisites",
+)
+@runtime_plan_source_options
+@click.option(
+    "--workspace-dir",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    help="Directory where the llm-d repository should be cloned for setup.",
+)
+@click.option(
+    "--state-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write reversible setup state to this JSON file.",
+)
+def setup_llmd_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_setup_llmd, **kwargs)
+
+
+@click.group(
+    "teardown",
+    help="Tear down platform setup using a previously recorded setup state.",
+    short_help="Platform teardown",
+)
+def teardown_group() -> None:
+    pass
+
+
+@teardown_group.command(
+    "llm-d",
+    help="Tear down llm-d gateway setup from a resolved RunPlan and setup state file.",
+    short_help="Tear down llm-d setup",
+)
+@runtime_plan_source_options
+@click.option(
+    "--workspace-dir",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    help="Directory where the llm-d repository should be cloned for teardown.",
+)
+@click.option(
+    "--state-path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="JSON setup state file produced by the setup step.",
+)
+def teardown_llmd_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_teardown_llmd, **kwargs)
 
 
 @click.group(
@@ -1103,6 +1298,27 @@ def task_resolve_run_plan_command(**kwargs: object) -> int:
 
 
 @task_group.command(
+    "setup-run-plan",
+    help="Internal command used by Tekton to setup platform prerequisites for a RunPlan.",
+    short_help="Setup a RunPlan in Tekton",
+)
+@click.option("--run-plan-json", required=True, help="Inline RunPlan JSON payload.")
+@click.option(
+    "--setup-mode",
+    default="auto",
+    show_default=True,
+    help="Setup mode. Supported values: auto, skip.",
+)
+@click.option(
+    "--state-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Path where the reversible setup state JSON should be written.",
+)
+def task_setup_run_plan_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_task_setup_run_plan, **kwargs)
+
+
+@task_group.command(
     "deploy-run-plan",
     help="Internal command used by Tekton to deploy the platform described by a RunPlan.",
     short_help="Deploy a RunPlan in Tekton",
@@ -1166,6 +1382,17 @@ def task_deploy_run_plan_command(**kwargs: object) -> int:
     "--no-skip-if-not-exists",
     is_flag=True,
     help="Fail instead of skipping when the workload is already absent.",
+)
+@click.option(
+    "--setup-state-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Path to the reversible setup state JSON file.",
+)
+@click.option(
+    "--teardown-text",
+    default="true",
+    show_default=True,
+    help="Whether platform setup should be torn down after scenario cleanup.",
 )
 def task_cleanup_run_plan_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_cleanup_run_plan, **kwargs)
