@@ -838,7 +838,6 @@ class BenchmarkProcessor:
         all_data["replicas"] = all_data["replicas"].fillna(1).astype(int)
 
         model_config = self.config["models"][0]
-        metric_groups = self.config["metric_groups"]
         colors = self.config["styling"]["colors"]
         markers = self.config["styling"]["markers"]
 
