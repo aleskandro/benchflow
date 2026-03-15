@@ -8,6 +8,7 @@ from click.shell_completion import get_completion_class
 from .cluster import CommandError
 from .commands.experiment import experiment_group
 from .commands.profiles import profiles_group
+from .commands.run_plan import run_plan_group
 from .commands.runtime import (
     artifacts_group,
     benchmark_group,
@@ -43,6 +44,9 @@ CONTEXT_SETTINGS = {
         "Examples:\n"
         "  bflow bootstrap\n"
         "  bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml\n"
+        "  bflow experiment resolve experiments/smoke/qwen3-06b-llm-d-smoke.yaml "
+        "--format json > runplan.json\n"
+        "  bflow run-plan run runplan.json\n"
         "  bflow experiment run --model Qwen/Qwen3-0.6B "
         "--deployment-profile llm-d-inference-scheduling "
         "--benchmark-profile guidellm-concurrent-1k-1k"
@@ -73,6 +77,7 @@ def completion_command(shell: str) -> int:
 
 cli.add_command(bootstrap_command)
 cli.add_command(experiment_group)
+cli.add_command(run_plan_group)
 cli.add_command(repo_group)
 cli.add_command(model_group)
 cli.add_command(deploy_group)

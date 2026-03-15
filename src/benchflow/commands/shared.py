@@ -378,6 +378,22 @@ def runtime_plan_source_options(func: Callable[..., object]) -> Callable[..., ob
     )(experiment_input_options(func))
 
 
+def run_plan_source_options(func: Callable[..., object]) -> Callable[..., object]:
+    return apply_click_options(
+        [
+            click.option(
+                "--run-plan-file",
+                type=click.Path(dir_okay=False, path_type=Path),
+                help="Path to a resolved RunPlan file.",
+            ),
+            click.option(
+                "--run-plan-json",
+                help="Inline RunPlan JSON payload.",
+            ),
+        ]
+    )(func)
+
+
 def format_profile_list(entries: list[dict[str, object]]) -> str:
     if not entries:
         return ""

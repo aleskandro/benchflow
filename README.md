@@ -6,6 +6,8 @@ BenchFlow is a control plane for repeatable LLM inference benchmarks on OpenShif
 
 The default runtime image is `ghcr.io/albertoperdomo2/benchflow/benchflow:latest`. The default namespace is `benchflow`.
 
+For the full command reference and advanced workflows, see [docs/ADVANCED.md](docs/ADVANCED.md).
+
 BenchFlow bootstraps the cluster resources it owns. That includes NFD, the NVIDIA GPU Operator, Tekton, Grafana, RBAC, PVCs, and the packaged Tekton tasks and pipelines. It does not implement `rhoai` or `rhaiis` execution yet, and it assumes an OpenShift cluster with cluster monitoring enabled and a reachable MLflow deployment backed by S3.
 
 ## Bootstrap
