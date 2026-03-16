@@ -1,0 +1,36 @@
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+spec:
+  components:
+    aipipelines:
+      managementState: Removed
+    dashboard:
+      managementState: Removed
+    feastoperator:
+      managementState: Removed
+    kserve:
+      managementState: Managed
+      modelsAsService:
+        managementState: Removed
+      nim:
+        managementState: Removed
+      rawDeploymentServiceConfig: Headless
+    kueue:
+      managementState: Removed
+    llamastackoperator:
+      managementState: Removed
+    mlflowoperator:
+      managementState: Removed
+    modelregistry:
+      managementState: Removed
+    ray:
+      managementState: Removed
+    trainer: {}
+    trainingoperator:
+      managementState: Removed
+    trustyai:
+      managementState: Removed
+    workbenches:
+      managementState: Removed

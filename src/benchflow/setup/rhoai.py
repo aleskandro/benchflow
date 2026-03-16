@@ -1,0 +1,627 @@
+from __future__ import annotations
+
+import json
+import re
+import time
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from ..assets import render_yaml_documents
+from ..cluster import CommandError, require_any_command, run_command, run_json_command
+from ..models import ResolvedRunPlan
+from ..ui import detail, step, success
+
+RHOAI_OPERATOR_NAMESPACE = "redhat-ods-operator"
+RHOAI_OPERATOR_SUBSCRIPTION_NAME = "rhods-operator"
+RHOAI_OPERATORGROUP_NAME = "redhat-ods-operator"
+RHOAI_OPERATOR_PACKAGE_NAME = "rhods-operator"
+RHOAI_CHANNEL = "fast-3.x"
+RHOAI_PINNED_SERIES = "3.3."
+RHOAI_DSC_NAME = "default-dsc"
+RHOAI_APPLICATIONS_NAMESPACE = "redhat-ods-applications"
+RHOAI_GATEWAYCLASS_NAME = "openshift-default"
+RHOAI_GATEWAY_NAME = "openshift-ai-inference"
+RHOAI_GATEWAY_NAMESPACE = "openshift-ingress"
+
+
+def _empty_state() -> dict[str, Any]:
+    return {
+        "apiVersion": "benchflow.io/v1alpha1",
+        "kind": "SetupState",
+        "platform": "rhoai",
+        "operator_namespace_created": False,
+        "operator_subscription_managed": False,
+        "operatorgroup_managed": False,
+        "operator_csv_name": "",
+        "datasciencecluster_managed": False,
+        "gatewayclass_managed": False,
+        "gateway_managed": False,
+    }
+
+
+def _persist_state(state: dict[str, Any], state_path: Path | None) -> None:
+    if state_path is None:
+        return
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _resource_exists(argv: list[str]) -> bool:
+    result = run_command(argv, capture_output=True, check=False)
+    return result.returncode == 0
+
+
+def _ensure_namespace(kubectl_cmd: str, name: str) -> bool:
+    if _resource_exists([kubectl_cmd, "get", "namespace", name, "-o", "name"]):
+        return False
+    run_command([kubectl_cmd, "create", "namespace", name])
+    return True
+
+
+def _operator_subscription_exists(kubectl_cmd: str) -> bool:
+    return _resource_exists(
+        [
+            kubectl_cmd,
+            "get",
+            "subscription",
+            RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+            "-n",
+            RHOAI_OPERATOR_NAMESPACE,
+            "-o",
+            "name",
+        ]
+    )
+
+
+def _datasciencecluster_exists(kubectl_cmd: str) -> bool:
+    return _resource_exists(
+        [kubectl_cmd, "get", "datasciencecluster", RHOAI_DSC_NAME, "-o", "name"]
+    )
+
+
+def _gatewayclass_exists(kubectl_cmd: str) -> bool:
+    return _resource_exists(
+        [kubectl_cmd, "get", "gatewayclass", RHOAI_GATEWAYCLASS_NAME, "-o", "name"]
+    )
+
+
+def _gateway_exists(kubectl_cmd: str) -> bool:
+    return _resource_exists(
+        [
+            kubectl_cmd,
+            "get",
+            "gateway",
+            RHOAI_GATEWAY_NAME,
+            "-n",
+            RHOAI_GATEWAY_NAMESPACE,
+            "-o",
+            "name",
+        ]
+    )
+
+
+def _catalog_source_for_package(kubectl_cmd: str, package_name: str) -> tuple[str, str]:
+    package = run_json_command(
+        [
+            kubectl_cmd,
+            "get",
+            "packagemanifest",
+            package_name,
+            "-n",
+            "openshift-marketplace",
+            "-o",
+            "json",
+        ]
+    )
+    status = package.get("status", {})
+    source = str(status.get("catalogSource") or "")
+    source_namespace = str(status.get("catalogSourceNamespace") or "")
+    if not source or not source_namespace:
+        raise CommandError(
+            f"packagemanifest/{package_name} does not expose catalog source details"
+        )
+    return source, source_namespace
+
+
+def _operatorgroups_in_namespace(
+    kubectl_cmd: str, namespace: str
+) -> list[dict[str, Any]]:
+    payload = run_json_command(
+        [kubectl_cmd, "get", "operatorgroup", "-n", namespace, "-o", "json"]
+    )
+    return list(payload.get("items", []) or [])
+
+
+def _parse_version_tuple(value: str) -> tuple[int, ...]:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
+    if not match:
+        return tuple()
+    return tuple(int(part) for part in match.groups())
+
+
+def _resolve_rhoai_starting_csv(kubectl_cmd: str) -> str:
+    package = run_json_command(
+        [
+            kubectl_cmd,
+            "get",
+            "packagemanifest",
+            RHOAI_OPERATOR_PACKAGE_NAME,
+            "-n",
+            "openshift-marketplace",
+            "-o",
+            "json",
+        ]
+    )
+    channels = package.get("status", {}).get("channels", []) or []
+    channel = next(
+        (item for item in channels if item.get("name") == RHOAI_CHANNEL),
+        None,
+    )
+    if not isinstance(channel, dict):
+        raise CommandError(
+            f"packagemanifest/{RHOAI_OPERATOR_PACKAGE_NAME} does not expose channel {RHOAI_CHANNEL}"
+        )
+
+    entries = channel.get("entries", []) or []
+    candidates: list[tuple[tuple[int, ...], str]] = []
+    current_csv = str(channel.get("currentCSV") or "")
+    current_version = str(
+        (channel.get("currentCSVDesc", {}) or {}).get("version") or ""
+    )
+    if current_csv and current_version.startswith(RHOAI_PINNED_SERIES):
+        version_tuple = _parse_version_tuple(current_version)
+        if version_tuple:
+            candidates.append((version_tuple, current_csv))
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        version = str(entry.get("version") or "")
+        name = str(entry.get("name") or "")
+        if not version.startswith(RHOAI_PINNED_SERIES):
+            continue
+        version_tuple = _parse_version_tuple(version)
+        if not version_tuple or not name:
+            continue
+        candidates.append((version_tuple, name))
+
+    if not candidates:
+        raise CommandError(
+            f"channel {RHOAI_CHANNEL} for {RHOAI_OPERATOR_PACKAGE_NAME} does not expose a {RHOAI_PINNED_SERIES} CSV"
+        )
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _apply_documents(
+    kubectl_cmd: str, documents: list[dict[str, Any]], *, namespace: str | None = None
+) -> None:
+    manifest = yaml.safe_dump_all(documents, sort_keys=False)
+
+    argv = [kubectl_cmd, "apply", "-f", "-"]
+    if namespace is not None:
+        argv[2:2] = ["-n", namespace]
+    run_command(argv, input_text=manifest)
+
+
+def _wait_for_subscription_current_csv(
+    kubectl_cmd: str, *, namespace: str, timeout_seconds: int
+) -> str:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        payload = run_json_command(
+            [
+                kubectl_cmd,
+                "get",
+                "subscription",
+                RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+                "-n",
+                namespace,
+                "-o",
+                "json",
+            ]
+        )
+        current_csv = str(payload.get("status", {}).get("currentCSV") or "").strip()
+        if current_csv:
+            return current_csv
+        time.sleep(5)
+    raise CommandError("timed out waiting for the RHOAI subscription to resolve")
+
+
+def _wait_for_csv_succeeded(
+    kubectl_cmd: str, *, namespace: str, csv_name: str, timeout_seconds: int
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        _approve_pending_installplan(
+            kubectl_cmd,
+            namespace=namespace,
+            expected_csv_name=csv_name,
+        )
+        payload = run_json_command(
+            [kubectl_cmd, "get", "csv", csv_name, "-n", namespace, "-o", "json"]
+        )
+        if str(payload.get("status", {}).get("phase") or "") == "Succeeded":
+            return
+        time.sleep(5)
+    raise CommandError(f"timed out waiting for CSV {csv_name} to reach Succeeded")
+
+
+def _approve_pending_installplan(
+    kubectl_cmd: str, *, namespace: str, expected_csv_name: str
+) -> None:
+    subscription = run_json_command(
+        [
+            kubectl_cmd,
+            "get",
+            "subscription",
+            RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+            "-n",
+            namespace,
+            "-o",
+            "json",
+        ]
+    )
+    conditions = subscription.get("status", {}).get("conditions", []) or []
+    pending = next(
+        (
+            condition
+            for condition in conditions
+            if condition.get("type") == "InstallPlanPending"
+        ),
+        None,
+    )
+    if (
+        not isinstance(pending, dict)
+        or pending.get("status") != "True"
+        or pending.get("reason") != "RequiresApproval"
+    ):
+        return
+
+    installplan_name = (
+        subscription.get("status", {}).get("installPlanRef", {}) or {}
+    ).get("name")
+    if not installplan_name:
+        return
+
+    installplan = run_json_command(
+        [
+            kubectl_cmd,
+            "get",
+            "installplan",
+            str(installplan_name),
+            "-n",
+            namespace,
+            "-o",
+            "json",
+        ]
+    )
+    csv_names = installplan.get("spec", {}).get("clusterServiceVersionNames", []) or []
+    for csv_name in csv_names:
+        if str(csv_name) != expected_csv_name:
+            raise CommandError(
+                f"refusing to auto-approve InstallPlan {installplan_name}: "
+                f"expected {expected_csv_name}, got {csv_name}"
+            )
+
+    step(f"Approving pending InstallPlan {installplan_name}")
+    run_command(
+        [
+            kubectl_cmd,
+            "patch",
+            "installplan",
+            str(installplan_name),
+            "-n",
+            namespace,
+            "--type",
+            "merge",
+            "-p",
+            '{"spec":{"approved":true}}',
+        ]
+    )
+
+
+def _wait_for_resource(
+    kubectl_cmd: str, argv: list[str], *, timeout_seconds: int, label: str
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _resource_exists([kubectl_cmd, *argv]):
+            return
+        time.sleep(5)
+    raise CommandError(f"timed out waiting for {label}")
+
+
+def _wait_for_labeled_pods_ready(
+    kubectl_cmd: str,
+    *,
+    namespace: str,
+    label_selector: str,
+    timeout_seconds: int,
+    label: str,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        payload = run_json_command(
+            [
+                kubectl_cmd,
+                "get",
+                "pods",
+                "-n",
+                namespace,
+                "-l",
+                label_selector,
+                "-o",
+                "json",
+            ]
+        )
+        items = payload.get("items", []) or []
+        if not items:
+            time.sleep(5)
+            continue
+        ready_pods = 0
+        for item in items:
+            conditions = item.get("status", {}).get("conditions", []) or []
+            if any(
+                condition.get("type") == "Ready" and condition.get("status") == "True"
+                for condition in conditions
+            ):
+                ready_pods += 1
+        if ready_pods:
+            return
+        time.sleep(5)
+    raise CommandError(f"timed out waiting for {label}")
+
+
+def setup_rhoai(
+    plan: ResolvedRunPlan, *, state_path: Path | None = None
+) -> dict[str, Any]:
+    kubectl_cmd = require_any_command("oc", "kubectl")
+    state = _empty_state()
+    _persist_state(state, state_path)
+
+    if _operator_subscription_exists(kubectl_cmd):
+        detail("RHOAI operator subscription already present")
+    else:
+        step("Installing the RHOAI operator")
+        state["operator_namespace_created"] = _ensure_namespace(
+            kubectl_cmd, RHOAI_OPERATOR_NAMESPACE
+        )
+        _persist_state(state, state_path)
+        source, source_namespace = _catalog_source_for_package(
+            kubectl_cmd, RHOAI_OPERATOR_PACKAGE_NAME
+        )
+        starting_csv = _resolve_rhoai_starting_csv(kubectl_cmd)
+        detail(
+            f"Installing {RHOAI_OPERATOR_PACKAGE_NAME} from {RHOAI_CHANNEL} "
+            f"with startingCSV {starting_csv}"
+        )
+        documents = render_yaml_documents(
+            "setup/rhoai/operator.yaml",
+            {
+                "SOURCE": source,
+                "SOURCE_NAMESPACE": source_namespace,
+                "STARTING_CSV": starting_csv,
+            },
+        )
+        operatorgroups = _operatorgroups_in_namespace(
+            kubectl_cmd, RHOAI_OPERATOR_NAMESPACE
+        )
+        if len(operatorgroups) > 1:
+            names = ", ".join(
+                str(item.get("metadata", {}).get("name", "unknown"))
+                for item in operatorgroups
+            )
+            raise CommandError(
+                f"namespace {RHOAI_OPERATOR_NAMESPACE} already has multiple OperatorGroups "
+                f"({names}); clean the namespace and rerun setup"
+            )
+        if operatorgroups:
+            existing_name = str(
+                operatorgroups[0].get("metadata", {}).get("name", "unknown")
+            )
+            detail(f"Reusing existing OperatorGroup {existing_name}")
+            documents = [
+                document
+                for document in documents
+                if document.get("kind") != "OperatorGroup"
+            ]
+        else:
+            state["operatorgroup_managed"] = True
+        _apply_documents(kubectl_cmd, documents)
+        state["operator_subscription_managed"] = True
+        _persist_state(state, state_path)
+        csv_name = _wait_for_subscription_current_csv(
+            kubectl_cmd, namespace=RHOAI_OPERATOR_NAMESPACE, timeout_seconds=900
+        )
+        state["operator_csv_name"] = csv_name
+        _persist_state(state, state_path)
+        _wait_for_csv_succeeded(
+            kubectl_cmd,
+            namespace=RHOAI_OPERATOR_NAMESPACE,
+            csv_name=csv_name,
+            timeout_seconds=1800,
+        )
+
+    _wait_for_resource(
+        kubectl_cmd,
+        [
+            "get",
+            "crd",
+            "datascienceclusters.datasciencecluster.opendatahub.io",
+            "-o",
+            "name",
+        ],
+        timeout_seconds=600,
+        label="RHOAI DataScienceCluster CRD",
+    )
+
+    if _datasciencecluster_exists(kubectl_cmd):
+        detail("DataScienceCluster default-dsc already present")
+    else:
+        step("Creating the DataScienceCluster")
+        documents = render_yaml_documents("setup/rhoai/datasciencecluster.yaml", {})
+        _apply_documents(kubectl_cmd, documents)
+        state["datasciencecluster_managed"] = True
+        _persist_state(state, state_path)
+
+    _wait_for_resource(
+        kubectl_cmd,
+        ["get", "datasciencecluster", RHOAI_DSC_NAME, "-o", "name"],
+        timeout_seconds=600,
+        label="DataScienceCluster default-dsc",
+    )
+    _wait_for_resource(
+        kubectl_cmd,
+        ["get", "namespace", RHOAI_APPLICATIONS_NAMESPACE, "-o", "name"],
+        timeout_seconds=900,
+        label=f"namespace {RHOAI_APPLICATIONS_NAMESPACE}",
+    )
+    step("Waiting for RHOAI serving controllers to become ready")
+    _wait_for_labeled_pods_ready(
+        kubectl_cmd,
+        namespace=RHOAI_APPLICATIONS_NAMESPACE,
+        label_selector="app=odh-model-controller",
+        timeout_seconds=900,
+        label="odh-model-controller pods",
+    )
+    _wait_for_labeled_pods_ready(
+        kubectl_cmd,
+        namespace=RHOAI_APPLICATIONS_NAMESPACE,
+        label_selector="control-plane=kserve-controller-manager",
+        timeout_seconds=900,
+        label="kserve-controller-manager pods",
+    )
+
+    gateway_documents = render_yaml_documents("setup/rhoai/gateway.yaml", {})
+    gatewayclass_document = gateway_documents[0]
+    gateway_document = gateway_documents[1]
+
+    if _gatewayclass_exists(kubectl_cmd):
+        detail(f"GatewayClass {RHOAI_GATEWAYCLASS_NAME} already present")
+    else:
+        step("Creating the RHOAI GatewayClass")
+        _apply_documents(kubectl_cmd, [gatewayclass_document])
+        state["gatewayclass_managed"] = True
+        _persist_state(state, state_path)
+
+    if _gateway_exists(kubectl_cmd):
+        detail(
+            f"Gateway {RHOAI_GATEWAY_NAME} already present in {RHOAI_GATEWAY_NAMESPACE}"
+        )
+    else:
+        step("Creating the RHOAI Gateway")
+        _apply_documents(kubectl_cmd, [gateway_document])
+        state["gateway_managed"] = True
+        _persist_state(state, state_path)
+
+    success("RHOAI platform prerequisites are ready")
+    return state
+
+
+def teardown_rhoai(plan: ResolvedRunPlan, state: dict[str, Any]) -> None:
+    if not state or state.get("platform") != "rhoai":
+        detail("No RHOAI setup state found; skipping teardown")
+        return
+
+    kubectl_cmd = require_any_command("oc", "kubectl")
+
+    if state.get("gateway_managed"):
+        step("Removing the RHOAI Gateway")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "gateway",
+                RHOAI_GATEWAY_NAME,
+                "-n",
+                RHOAI_GATEWAY_NAMESPACE,
+                "--ignore-not-found=true",
+            ]
+        )
+
+    if state.get("gatewayclass_managed"):
+        step("Removing the RHOAI GatewayClass")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "gatewayclass",
+                RHOAI_GATEWAYCLASS_NAME,
+                "--ignore-not-found=true",
+            ]
+        )
+
+    if state.get("datasciencecluster_managed"):
+        step("Removing the DataScienceCluster")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "datasciencecluster",
+                RHOAI_DSC_NAME,
+                "--ignore-not-found=true",
+            ]
+        )
+
+    if state.get("operator_subscription_managed"):
+        step("Removing the RHOAI operator subscription")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "subscription",
+                RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+                "-n",
+                RHOAI_OPERATOR_NAMESPACE,
+                "--ignore-not-found=true",
+            ]
+        )
+
+    csv_name = str(state.get("operator_csv_name") or "").strip()
+    if csv_name:
+        step(f"Removing CSV {csv_name}")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "csv",
+                csv_name,
+                "-n",
+                RHOAI_OPERATOR_NAMESPACE,
+                "--ignore-not-found=true",
+            ],
+            check=False,
+        )
+
+    if state.get("operatorgroup_managed"):
+        step("Removing the RHOAI OperatorGroup")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "operatorgroup",
+                RHOAI_OPERATORGROUP_NAME,
+                "-n",
+                RHOAI_OPERATOR_NAMESPACE,
+                "--ignore-not-found=true",
+            ],
+            check=False,
+        )
+
+    if state.get("operator_namespace_created"):
+        step(f"Removing namespace {RHOAI_OPERATOR_NAMESPACE}")
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "namespace",
+                RHOAI_OPERATOR_NAMESPACE,
+                "--ignore-not-found=true",
+            ],
+            check=False,
+        )
+
+    success("RHOAI platform setup has been torn down")

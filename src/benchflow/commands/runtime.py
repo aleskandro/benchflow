@@ -31,7 +31,13 @@ from ..metrics import collect_metrics
 from ..mlflow_upload import upload_to_mlflow
 from ..model import download_model
 from ..models import ValidationError
-from ..setup import load_setup_state, setup_llmd, teardown_llmd
+from ..setup import (
+    load_setup_state,
+    setup_llmd,
+    setup_rhoai,
+    teardown_llmd,
+    teardown_rhoai,
+)
 from ..repository import clone_repo
 from ..renderers.tekton import render_pipelinerun
 from ..tasking import assert_task_status, write_stage_results
@@ -117,6 +123,39 @@ def cmd_model_download(args: argparse.Namespace) -> int:
     return 0
 
 
+def _setup_platform(
+    plan,
+    *,
+    workspace_dir: Path | None = None,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    if plan.deployment.platform == "llm-d":
+        return setup_llmd(plan, workspace_dir=workspace_dir, state_path=state_path)
+    if plan.deployment.platform == "rhoai":
+        return setup_rhoai(plan, state_path=state_path)
+    detail(
+        f"No platform setup implemented for {plan.deployment.platform}; continuing without changes"
+    )
+    return {}
+
+
+def _teardown_platform(
+    plan,
+    state: dict[str, Any],
+    *,
+    workspace_dir: Path | None = None,
+) -> None:
+    if plan.deployment.platform == "llm-d":
+        teardown_llmd(plan, state, workspace_dir=workspace_dir)
+        return
+    if plan.deployment.platform == "rhoai":
+        teardown_rhoai(plan, state)
+        return
+    detail(
+        f"No platform teardown implemented for {plan.deployment.platform}; cleanup removed only scenario resources"
+    )
+
+
 def cmd_setup_llmd(args: argparse.Namespace) -> int:
     plan = load_runtime_plan(args)
     require_platform(plan, "llm-d")
@@ -125,6 +164,20 @@ def cmd_setup_llmd(args: argparse.Namespace) -> int:
         workspace_dir=Path(args.workspace_dir).resolve()
         if args.workspace_dir
         else None,
+        state_path=Path(args.state_path).resolve() if args.state_path else None,
+    )
+    if args.state_path:
+        print(Path(args.state_path).resolve())
+    else:
+        print(json.dumps(state, sort_keys=True))
+    return 0
+
+
+def cmd_setup_rhoai(args: argparse.Namespace) -> int:
+    plan = load_runtime_plan(args)
+    require_platform(plan, "rhoai")
+    state = setup_rhoai(
+        plan,
         state_path=Path(args.state_path).resolve() if args.state_path else None,
     )
     if args.state_path:
@@ -147,6 +200,17 @@ def cmd_teardown_llmd(args: argparse.Namespace) -> int:
         if args.workspace_dir
         else None,
     )
+    print(plan.deployment.release_name)
+    return 0
+
+
+def cmd_teardown_rhoai(args: argparse.Namespace) -> int:
+    plan = load_runtime_plan(args)
+    require_platform(plan, "rhoai")
+    state = load_setup_state(
+        Path(args.state_path).resolve() if args.state_path else None
+    )
+    teardown_rhoai(plan, state)
     print(plan.deployment.release_name)
     return 0
 
@@ -460,16 +524,10 @@ def cmd_task_setup_run_plan(args: argparse.Namespace) -> int:
             f"unsupported setup mode: {args.setup_mode!r}; expected auto or skip"
         )
 
-    if plan.deployment.platform == "llm-d":
-        state = setup_llmd(plan, state_path=state_path)
-    else:
-        detail(
-            f"No platform setup implemented for {plan.deployment.platform}; continuing without changes"
-        )
-        state = {}
-        if state_path is not None:
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_text("{}", encoding="utf-8")
+    state = _setup_platform(plan, state_path=state_path)
+    if not state and state_path is not None:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text("{}", encoding="utf-8")
 
     if state_path is not None:
         print(state_path)
@@ -543,9 +601,7 @@ def cmd_task_cleanup_run_plan(args: argparse.Namespace) -> int:
         except Exception as exc:  # pragma: no cover - cleanup fallback path
             cleanup_error = exc
         if teardown:
-            detail(
-                "No platform teardown implemented for rhoai; cleanup removed only scenario resources"
-            )
+            _teardown_platform(plan, setup_state)
     else:
         raise ValidationError(
             f"unsupported deployment platform: {plan.deployment.platform}"
@@ -612,16 +668,21 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     setup_state_dir: tempfile.TemporaryDirectory[str] | None = None
     setup_state_path: Path | None = None
 
+    matrix_platform = (
+        plans[0].deployment.platform
+        if len({plan.deployment.platform for plan in plans}) == 1
+        else ""
+    )
     if (
-        {plan.deployment.platform for plan in plans} == {"llm-d"}
+        matrix_platform in {"llm-d", "rhoai"}
         and all(plan.stages.deploy for plan in plans)
         and all(plan.stages.cleanup for plan in plans)
     ):
-        step("Setting up llm-d platform once for the whole matrix")
+        step(f"Setting up {matrix_platform} platform once for the whole matrix")
         setup_state_dir = tempfile.TemporaryDirectory(prefix="benchflow-matrix-setup-")
         setup_state_path = Path(setup_state_dir.name) / "setup-state.json"
         setup_hoisted = True
-        setup_state = setup_llmd(plans[0], state_path=setup_state_path)
+        setup_state = _setup_platform(plans[0], state_path=setup_state_path)
 
     try:
         for index, plan in enumerate(plans, start=1):
@@ -653,10 +714,10 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
             failures.append(name)
     finally:
         if setup_hoisted:
-            step("Tearing down hoisted llm-d platform setup")
+            step(f"Tearing down hoisted {plans[0].deployment.platform} platform setup")
             if setup_state_path is not None:
                 setup_state = load_setup_state(setup_state_path)
-            teardown_llmd(plans[0], setup_state)
+            _teardown_platform(plans[0], setup_state)
         if setup_state_dir is not None:
             setup_state_dir.cleanup()
 
@@ -832,6 +893,21 @@ def setup_llmd_command(**kwargs: object) -> int:
     return invoke_handler(cmd_setup_llmd, **kwargs)
 
 
+@setup_group.command(
+    "rhoai",
+    help="Setup RHOAI operator, DataScienceCluster, and Gateway prerequisites from a resolved RunPlan.",
+    short_help="Setup RHOAI prerequisites",
+)
+@runtime_plan_source_options
+@click.option(
+    "--state-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write reversible setup state to this JSON file.",
+)
+def setup_rhoai_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_setup_rhoai, **kwargs)
+
+
 @click.group(
     "teardown",
     help="Tear down platform setup using a previously recorded setup state.",
@@ -860,6 +936,22 @@ def teardown_group() -> None:
 )
 def teardown_llmd_command(**kwargs: object) -> int:
     return invoke_handler(cmd_teardown_llmd, **kwargs)
+
+
+@teardown_group.command(
+    "rhoai",
+    help="Tear down RHOAI setup from a resolved RunPlan and setup state file.",
+    short_help="Tear down RHOAI setup",
+)
+@runtime_plan_source_options
+@click.option(
+    "--state-path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="JSON setup state file produced by the setup step.",
+)
+def teardown_rhoai_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_teardown_rhoai, **kwargs)
 
 
 @click.group(

@@ -7,7 +7,7 @@
 BenchFlow is a packaged control plane for running benchmark scenarios, not a loose collection of scripts. It resolves an experiment into one immutable `RunPlan`, executes it in Tekton, captures metrics and artifacts, and pushes the result to MLflow. It is powered by [vllm-project/guidellm](https://github.com/vllm-project/guidellm).
 
 > [!NOTE]
-> The implemented execution paths today are `llm-d` and `RHOAI`, although the latter is missing the `prepare` step. 
+> The implemented execution paths today are `llm-d` and `RHOAI`.
 
 ## Quickstart
 

@@ -25,10 +25,9 @@ bflow experiment validate my-experiment.yaml
 bflow experiment run my-experiment.yaml
 ```
 
-For `llm-d`, the normal path now includes a reversible platform setup
-step before deployment. BenchFlow applies the upstream gateway-provider
-prerequisites for the selected llm-d repo ref, records what it changed, and
-tears those changes down during cleanup.
+For `llm-d` and `rhoai`, the normal path now includes a reversible platform
+setup step before deployment. BenchFlow records what it changed and tears
+those changes down during cleanup.
 
 The advanced path is:
 
