@@ -1108,6 +1108,17 @@ class Installer:
             description="applying runner RBAC",
             variables=self._base_asset_variables(),
         )
+        if self._resource_exists("get", "namespace", "istio-system"):
+            self._apply_asset_documents(
+                "rbac/runner-istio-system.yaml",
+                namespace=None,
+                description="applying istio-system runner RBAC",
+                variables=self._base_asset_variables(),
+            )
+        else:
+            detail(
+                "Skipping istio-system runner RBAC because namespace istio-system does not exist"
+            )
         self._apply_asset_documents(
             "rbac/runner-cluster.yaml",
             namespace=None,
