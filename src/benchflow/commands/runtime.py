@@ -561,7 +561,10 @@ def cmd_task_cleanup_run_plan(args: argparse.Namespace) -> int:
             try:
                 next(parent.iterdir())
             except StopIteration:
-                parent.rmdir()
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
 
     print(plan.deployment.release_name)
     return 0
