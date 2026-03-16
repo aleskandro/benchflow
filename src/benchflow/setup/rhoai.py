@@ -619,6 +619,7 @@ def teardown_rhoai(plan: ResolvedRunPlan, state: dict[str, Any]) -> None:
                 "delete",
                 "namespace",
                 RHOAI_OPERATOR_NAMESPACE,
+                "--wait=false",
                 "--ignore-not-found=true",
             ],
             check=False,
