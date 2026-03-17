@@ -101,6 +101,10 @@ cli.add_command(profiles_group)
 def main(argv: list[str] | None = None) -> int:
     try:
         result = cli.main(args=argv, prog_name="bflow", standalone_mode=False)
+    except KeyboardInterrupt:
+        return 130
+    except click.Abort:
+        return 130
     except click.ClickException as exc:
         exc.show()
         return exc.exit_code

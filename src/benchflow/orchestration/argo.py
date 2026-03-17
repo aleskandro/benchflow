@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from ..cluster import CommandError, require_command, run_command, run_json_command
@@ -521,7 +522,7 @@ class ArgoOrchestrator:
 
             if state[1]:
                 return state[2]
-            subprocess.run(["sleep", str(poll_interval)], check=False)
+            time.sleep(poll_interval)
 
     def list_steps(self, namespace: str, name: str) -> list[str]:
         workflow = _get_workflow(namespace, name)
