@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import time
 from typing import Any
 
@@ -176,6 +178,25 @@ def _list_workflows(
     return items if isinstance(items, list) else []
 
 
+def _workflow_log_stream_limit(namespace: str, name: str) -> int:
+    require_command("oc")
+    selector = f"workflows.argoproj.io/workflow={name}"
+    payload = run_json_command(
+        ["oc", "get", "pod", "-n", namespace, "-l", selector, "-o", "json"]
+    )
+    items = payload.get("items", [])
+    if not isinstance(items, list) or not items:
+        return 20
+
+    stream_count = 0
+    for item in items:
+        spec = item.get("spec", {}) or {}
+        containers = spec.get("containers", []) or []
+        init_containers = spec.get("initContainers", []) or []
+        stream_count += len(containers) + len(init_containers)
+    return max(20, stream_count)
+
+
 class ArgoBackend:
     name = "argo"
 
@@ -254,6 +275,47 @@ class ArgoBackend:
 
     def follow(self, namespace: str, name: str, *, poll_interval: int = 5) -> bool:
         require_command("oc")
+
+        if shutil.which("argo") is not None:
+            step(f"Following Workflow {name} in namespace {namespace}")
+            subprocess.run(
+                ["argo", "logs", "-f", "-n", namespace, name],
+                check=False,
+            )
+            payload = _get_workflow(namespace, name)
+            if payload is None:
+                raise CommandError(
+                    f"Workflow {name} in namespace {namespace} was not found"
+                )
+            state, finished, succeeded, message = _workflow_state(payload)
+            if succeeded:
+                success(f"{name}: {state}")
+            else:
+                warning(f"{name}: {state}")
+            if message:
+                detail(message)
+            return finished and succeeded
+
+        step(f"Following Workflow {name} logs in namespace {namespace} with oc logs")
+        max_log_requests = _workflow_log_stream_limit(namespace, name)
+        subprocess.run(
+            [
+                "oc",
+                "logs",
+                "-f",
+                "-n",
+                namespace,
+                "-l",
+                f"workflows.argoproj.io/workflow={name}",
+                "--all-containers=true",
+                "--prefix=true",
+                "--ignore-errors=true",
+                f"--max-log-requests={max_log_requests}",
+                "--pod-running-timeout=10m",
+            ],
+            check=False,
+        )
+
         last_state: tuple[str, bool, bool, str] | None = None
         step(f"Watching Workflow {name} in namespace {namespace}")
         while True:

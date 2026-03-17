@@ -154,7 +154,6 @@ List running and finished experiments:
 
 ```bash
 bflow experiment list
-bflow experiment list --all
 ```
 
 Cancel one:
@@ -428,7 +427,7 @@ bflow run-plan render-pipelinerun runplan.json
 If a run is already in the cluster:
 
 ```bash
-bflow experiment list --all
+bflow experiment list
 bflow watch <execution-name> --namespace benchflow
 ```
 

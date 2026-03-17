@@ -114,7 +114,7 @@ def _execution_summaries_for_backend(
 def list_benchflow_executions(
     namespace: str,
     *,
-    include_completed: bool = False,
+    include_completed: bool = True,
     backend: str | None = None,
 ) -> list[dict[str, Any]]:
     backend_names = (

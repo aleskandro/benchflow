@@ -46,7 +46,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     namespace = _namespace_from_args(args)
     entries = list_benchflow_executions(
         namespace,
-        include_completed=args.include_completed,
+        include_completed=True,
         backend=getattr(args, "backend", None),
     )
     if args.format == "json":
@@ -245,18 +245,12 @@ def experiment_group() -> None:
 
 @experiment_group.command(
     "list",
-    help="List BenchFlow executions in a namespace. Active runs are shown by default.",
+    help="List BenchFlow executions in a namespace. Finished runs are shown by default.",
     short_help="List experiments in the cluster",
 )
 @click.option(
     "--namespace",
     help="Namespace to inspect. Defaults to the current oc project.",
-)
-@click.option(
-    "--all",
-    "include_completed",
-    is_flag=True,
-    help="Include finished executions as well as active ones.",
 )
 @click.option(
     "--format",
