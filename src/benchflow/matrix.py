@@ -4,6 +4,7 @@ from itertools import product
 
 from .loaders import ProfileCatalog
 from .models import (
+    ExecutionSpec,
     Experiment,
     ExperimentSpec,
     Metadata,
@@ -87,6 +88,7 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                         experiment=experiment.spec.mlflow.experiment,
                         tags=dict(experiment.spec.mlflow.tags),
                     ),
+                    execution=ExecutionSpec(backend=experiment.spec.execution.backend),
                 ),
             )
         )

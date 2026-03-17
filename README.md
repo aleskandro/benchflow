@@ -4,7 +4,7 @@
 
 *Repeatable LLM inference benchmarks for OpenShift.*
 
-BenchFlow is a packaged control plane for running benchmark scenarios, not a loose collection of scripts. It resolves an experiment into one immutable `RunPlan`, executes it in Tekton, captures metrics and artifacts, and pushes the result to MLflow. It is powered by [vllm-project/guidellm](https://github.com/vllm-project/guidellm).
+BenchFlow is a packaged control plane for running benchmark scenarios, not a loose collection of scripts. It resolves an experiment into one immutable `RunPlan`, executes it through a backend abstraction with Tekton or Argo Workflows, captures metrics and artifacts, and pushes the result to MLflow. It is powered by [vllm-project/guidellm](https://github.com/vllm-project/guidellm).
 
 > [!NOTE]
 > This project is experimental and for learning purposes mainly, but the implemented execution paths today are `llm-d` and `RHOAI`. Expect some parts to still be highly coupled.
@@ -25,7 +25,13 @@ Then bootstrap the cluster:
 bflow bootstrap
 ```
 
-`bflow bootstrap` installs the shared baseline BenchFlow owns: NFD, the NVIDIA GPU Operator, Tekton, Grafana, RBAC, PVCs, and the packaged Tekton assets. BenchFlow assumes an OpenShift cluster with cluster monitoring enabled, a reachable MLflow deployment backed by S3, and a usable storage class.
+`bflow bootstrap` installs the shared baseline BenchFlow owns: NFD, the NVIDIA GPU Operator, Tekton, optional Argo Workflows, Grafana, RBAC, PVCs, the packaged Tekton assets, and the repo-root Argo reusable templates and workflow templates when Argo is available. BenchFlow assumes an OpenShift cluster with cluster monitoring enabled, a reachable MLflow deployment backed by S3, and a usable storage class.
+
+If you want to provision Argo Workflows too, use:
+
+```bash
+bflow bootstrap --install-argo
+```
 
 The narrow path is the shipped smoke experiment:
 
@@ -33,10 +39,10 @@ The narrow path is the shipped smoke experiment:
 bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml
 ```
 
-Then follow the `PipelineRun`:
+Then follow the execution:
 
 ```bash
-bflow watch <pipelinerun-name> --namespace benchflow
+bflow watch <execution-name> --namespace benchflow
 ```
 
 BenchFlow also supports matrix experiments by turning one or more profile fields into lists; the cluster then runs the cartesian product sequentially in the cluster.

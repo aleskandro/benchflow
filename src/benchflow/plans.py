@@ -121,6 +121,7 @@ def resolve_run_plan(
             benchmark=benchmark_profile.metadata.name,
             metrics=metrics_profile.metadata.name,
         ),
+        execution=experiment.spec.execution,
         model=experiment.spec.model,
         deployment=deployment,
         benchmark=benchmark_profile.spec,

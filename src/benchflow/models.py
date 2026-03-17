@@ -103,6 +103,21 @@ class MlflowSpec:
 
 
 @dataclass(slots=True)
+class ExecutionSpec:
+    backend: str = "tekton"
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "ExecutionSpec":
+        raw = raw or {}
+        backend = str(raw.get("backend", "tekton") or "tekton").strip().lower()
+        if backend not in {"tekton", "argo"}:
+            raise ValidationError(
+                f"unsupported execution backend: {backend!r}; expected tekton or argo"
+            )
+        return cls(backend=backend)
+
+
+@dataclass(slots=True)
 class ExperimentSpec:
     model: ModelSpec
     deployment_profile: list[str]
@@ -113,6 +128,7 @@ class ExperimentSpec:
     ttl_seconds_after_finished: int = 3600
     stages: StageSpec = field(default_factory=StageSpec)
     mlflow: MlflowSpec = field(default_factory=MlflowSpec)
+    execution: ExecutionSpec = field(default_factory=ExecutionSpec)
 
 
 @dataclass(slots=True)
@@ -237,6 +253,7 @@ class ResolvedRunPlan:
     kind: str
     metadata: Metadata
     profiles: ProfileRefs
+    execution: ExecutionSpec
     model: ModelSpec
     deployment: ResolvedDeployment
     benchmark: BenchmarkProfileSpec

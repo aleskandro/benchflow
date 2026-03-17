@@ -558,7 +558,7 @@ def run_benchmark_with_mlflow(
     multiturn_mode = os.environ.get("MULTITURN", "false").lower() == "true"
 
     # Run name for the whole sweep
-    # Use PipelineRun name if provided (Tekton integration), otherwise generate one
+    # Use the execution name if provided by the backend, otherwise generate one
     pipeline_run_name = os.environ.get("PIPELINE_RUN_NAME", "")
     if pipeline_run_name:
         run_name = pipeline_run_name
@@ -1012,7 +1012,7 @@ def validate_runs_compatibility(runs_data: list) -> tuple:
 
     data_profile = ",".join(profile_parts) if profile_parts else None
 
-    logger.info(f"All runs validated successfully:")
+    logger.info("All runs validated successfully:")
     logger.info(f"  Model: {model}")
     logger.info(f"  Rate: {rate}")
     logger.info(f"  Data profile: {data_profile}")
@@ -1231,8 +1231,8 @@ def generate_plot_only_report(
         logger.info(
             f"After version filtering: {len(final_df)} rows (removed {initial_rows - len(final_df)} rows)"
         )
-        logger.info(f"  CSV data filtered with exact match")
-        logger.info(f"  MLflow data filtered with prefix match")
+        logger.info("  CSV data filtered with exact match")
+        logger.info("  MLflow data filtered with prefix match")
 
     # Apply version overrides after filtering, before plotting
     if versions_override:

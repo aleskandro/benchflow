@@ -1,1 +1,1 @@
-"""Renderers for Tekton and deployment artifacts."""
+"""Renderers for BenchFlow deployment artifacts."""

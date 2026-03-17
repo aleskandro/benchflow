@@ -72,7 +72,7 @@ def collect_artifacts(
         f"in namespace {plan.deployment.namespace}"
     )
     if pipeline_run_name:
-        detail(f"PipelineRun: {pipeline_run_name}")
+        detail(f"Execution: {pipeline_run_name}")
     detail(f"Artifacts directory: {artifacts_dir}")
     for relative in (
         "logs/pipeline",
@@ -88,27 +88,37 @@ def collect_artifacts(
     pipeline_pods: list[str] = []
     pipeline_count = 0
     if pipeline_run_name:
-        detail("Collecting Tekton task pod logs")
-        payload = run_json_command(
-            [
-                kubectl_cmd,
-                "get",
-                "pods",
-                "-n",
-                namespace,
-                "-l",
-                f"tekton.dev/pipelineRun={pipeline_run_name}",
-                "-o",
-                "json",
-            ]
+        detail("Collecting execution pod logs")
+        selectors = (
+            f"tekton.dev/pipelineRun={pipeline_run_name}",
+            f"workflows.argoproj.io/workflow={pipeline_run_name}",
         )
-        pipeline_pods = [item["metadata"]["name"] for item in payload.get("items", [])]
+        seen_pipeline_pods: set[str] = set()
+        for selector in selectors:
+            payload = run_json_command(
+                [
+                    kubectl_cmd,
+                    "get",
+                    "pods",
+                    "-n",
+                    namespace,
+                    "-l",
+                    selector,
+                    "-o",
+                    "json",
+                ]
+            )
+            for item in payload.get("items", []):
+                pod_name = item.get("metadata", {}).get("name", "")
+                if pod_name:
+                    seen_pipeline_pods.add(pod_name)
+        pipeline_pods = sorted(seen_pipeline_pods)
         for pod_name in pipeline_pods:
             if _collect_pod_logs(
                 kubectl_cmd, namespace, pod_name, artifacts_dir / "logs" / "pipeline"
             ):
                 pipeline_count += 1
-        detail(f"Collected logs from {pipeline_count} pipeline pod(s)")
+        detail(f"Collected logs from {pipeline_count} execution pod(s)")
 
     payload = run_json_command(
         [kubectl_cmd, "get", "pods", "-n", namespace, "-o", "json"]

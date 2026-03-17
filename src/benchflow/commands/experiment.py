@@ -7,17 +7,19 @@ import click
 
 from ..cluster import (
     CommandError,
-    cancel_pipelinerun,
     create_manifest,
-    follow_pipelinerun,
     get_current_namespace,
-    get_pipelinerun,
-    list_benchflow_pipelineruns,
-    summarize_pipelinerun,
+)
+from ..execution import (
+    cancel_execution,
+    follow_execution,
+    list_benchflow_executions,
+    render_execution_manifest,
+    render_matrix_execution_manifest,
+    summarize_execution,
 )
 from ..models import StageSpec
 from ..renderers.deployment import write_deployment_assets
-from ..renderers.tekton import render_matrix_pipelinerun, render_pipelinerun
 from ..ui import detail, step, success
 from .shared import (
     dump,
@@ -42,8 +44,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     namespace = _namespace_from_args(args)
-    entries = list_benchflow_pipelineruns(
-        namespace, include_completed=args.include_completed
+    entries = list_benchflow_executions(
+        namespace,
+        include_completed=args.include_completed,
+        backend=getattr(args, "backend", None),
     )
     if args.format == "json":
         print(dump(entries, "json"))
@@ -59,22 +63,24 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def _resolve_cancel_targets(
-    namespace: str, identifier: str, *, cancel_all: bool
+    namespace: str, identifier: str, *, cancel_all: bool, backend: str | None = None
 ) -> list[dict[str, object]]:
     try:
-        exact = summarize_pipelinerun(get_pipelinerun(namespace, identifier))
+        exact = summarize_execution(namespace, identifier, backend=backend)
     except CommandError:
         exact = None
     else:
         if not exact.get("experiment"):
             raise CommandError(
-                f"PipelineRun {identifier} exists in {namespace} but is not a BenchFlow experiment"
+                f"execution {identifier} exists in {namespace} but is not a BenchFlow experiment"
             )
         if exact.get("finished"):
-            raise CommandError(f"PipelineRun {identifier} is already finished")
+            raise CommandError(f"execution {identifier} is already finished")
         return [exact]
 
-    entries = list_benchflow_pipelineruns(namespace, include_completed=False)
+    entries = list_benchflow_executions(
+        namespace, include_completed=False, backend=backend
+    )
     matches = [entry for entry in entries if entry.get("experiment") == identifier]
     if not matches:
         raise CommandError(
@@ -83,8 +89,8 @@ def _resolve_cancel_targets(
     if len(matches) > 1 and not cancel_all:
         names = ", ".join(str(entry["name"]) for entry in matches)
         raise CommandError(
-            f"multiple active PipelineRuns match experiment {identifier!r}: {names}; "
-            "use the PipelineRun name or pass --all"
+            f"multiple active executions match experiment {identifier!r}: {names}; "
+            "use the execution name or pass --all"
         )
     return matches if cancel_all else [matches[0]]
 
@@ -92,16 +98,19 @@ def _resolve_cancel_targets(
 def cmd_cancel(args: argparse.Namespace) -> int:
     namespace = _namespace_from_args(args)
     targets = _resolve_cancel_targets(
-        namespace, args.identifier, cancel_all=args.all_matches
+        namespace,
+        args.identifier,
+        cancel_all=args.all_matches,
+        backend=getattr(args, "backend", None),
     )
     step(
-        f"Cancelling {len(targets)} BenchFlow PipelineRun"
+        f"Cancelling {len(targets)} BenchFlow execution"
         f"{'' if len(targets) == 1 else 's'} in namespace {namespace}"
     )
     for target in targets:
         name = str(target["name"])
         detail(f"{name} (experiment={target['experiment']}, status={target['status']})")
-        cancel_pipelinerun(namespace, name)
+        cancel_execution(namespace, name, backend=str(target.get("backend") or ""))
         success(f"Cancellation requested for {name}")
     return 0
 
@@ -120,11 +129,14 @@ def cmd_resolve(args: argparse.Namespace) -> int:
 def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
     plans = load_plans(args)
     if len(plans) == 1:
-        manifest = render_pipelinerun(plans[0], pipeline_name=args.pipeline_name)
+        manifest = render_execution_manifest(
+            plans[0],
+            execution_name=args.pipeline_name,
+        )
     else:
-        manifest = render_matrix_pipelinerun(
+        manifest = render_matrix_execution_manifest(
             plans,
-            child_pipeline_name=args.pipeline_name,
+            child_execution_name=args.pipeline_name,
         )
     print(dump_yaml(manifest))
     return 0
@@ -159,12 +171,15 @@ def _render_manifest_yaml(
         )
 
     if len(plans) == 1:
-        manifest = render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+        manifest = render_execution_manifest(
+            plan,
+            execution_name=args.pipeline_name,
+        )
         namespace = plan.deployment.namespace
     else:
-        manifest = render_matrix_pipelinerun(
+        manifest = render_matrix_execution_manifest(
             plans,
-            child_pipeline_name=args.pipeline_name,
+            child_execution_name=args.pipeline_name,
         )
         namespace = plan.deployment.namespace
     manifest_yaml = dump_yaml(manifest)
@@ -175,12 +190,12 @@ def _submit_manifest(manifest_yaml: str, namespace: str) -> str:
     submitted = create_manifest(manifest_yaml, namespace)
     name = submitted.get("metadata", {}).get("name")
     if not name:
-        raise CommandError("oc create returned no PipelineRun name")
+        raise CommandError("oc create returned no execution name")
     return str(name)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    _, manifest_yaml, namespace = _render_manifest_yaml(args)
+    plan_or_plans, manifest_yaml, namespace = _render_manifest_yaml(args)
 
     if args.output:
         Path(args.output).resolve().write_text(manifest_yaml, encoding="utf-8")
@@ -189,12 +204,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        return 0 if follow_pipelinerun(namespace, name) else 1
+        backend = (
+            plan_or_plans.execution.backend
+            if hasattr(plan_or_plans, "execution")
+            else plan_or_plans[0].execution.backend
+        )
+        return 0 if follow_execution(namespace, name, backend=backend) else 1
     return 0
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
-    _, manifest_yaml, namespace = _render_manifest_yaml(args, cleanup_only=True)
+    plan_or_plans, manifest_yaml, namespace = _render_manifest_yaml(
+        args, cleanup_only=True
+    )
 
     if args.output:
         Path(args.output).resolve().write_text(manifest_yaml, encoding="utf-8")
@@ -203,7 +225,12 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        return 0 if follow_pipelinerun(namespace, name) else 1
+        backend = (
+            plan_or_plans.execution.backend
+            if hasattr(plan_or_plans, "execution")
+            else plan_or_plans[0].execution.backend
+        )
+        return 0 if follow_execution(namespace, name, backend=backend) else 1
     return 0
 
 
@@ -218,7 +245,7 @@ def experiment_group() -> None:
 
 @experiment_group.command(
     "list",
-    help="List BenchFlow PipelineRuns in a namespace. Active runs are shown by default.",
+    help="List BenchFlow executions in a namespace. Active runs are shown by default.",
     short_help="List experiments in the cluster",
 )
 @click.option(
@@ -229,7 +256,7 @@ def experiment_group() -> None:
     "--all",
     "include_completed",
     is_flag=True,
-    help="Include finished PipelineRuns as well as active ones.",
+    help="Include finished executions as well as active ones.",
 )
 @click.option(
     "--format",
@@ -239,6 +266,11 @@ def experiment_group() -> None:
     show_default=True,
     help="Output format.",
 )
+@click.option(
+    "--backend",
+    type=click.Choice(("tekton", "argo")),
+    help="Execution backend filter. Defaults to all BenchFlow backends.",
+)
 def experiment_list(**kwargs: object) -> int:
     return invoke_handler(cmd_list, **kwargs)
 
@@ -246,7 +278,7 @@ def experiment_list(**kwargs: object) -> int:
 @experiment_group.command(
     "cancel",
     help=(
-        "Cancel a running BenchFlow PipelineRun by PipelineRun name or by "
+        "Cancel a running BenchFlow execution by execution name or by "
         "experiment name label."
     ),
     short_help="Cancel a running experiment",
@@ -254,13 +286,18 @@ def experiment_list(**kwargs: object) -> int:
 @click.argument("identifier")
 @click.option(
     "--namespace",
-    help="Namespace that contains the PipelineRun. Defaults to the current oc project.",
+    help="Namespace that contains the execution. Defaults to the current oc project.",
 )
 @click.option(
     "--all",
     "all_matches",
     is_flag=True,
-    help="Cancel all active PipelineRuns that match the experiment name.",
+    help="Cancel all active executions that match the experiment name.",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(("tekton", "argo")),
+    help="Execution backend. Defaults to auto-detect by resource name.",
 )
 def experiment_cancel(**kwargs: object) -> int:
     return invoke_handler(cmd_cancel, **kwargs)
@@ -300,17 +337,17 @@ def experiment_resolve(**kwargs: object) -> int:
 @experiment_group.command(
     "render-pipelinerun",
     help=(
-        "Render the Tekton PipelineRun that would be submitted for an experiment. "
-        "Matrix experiments render the supervisor PipelineRun."
+        "Render the execution manifest that would be submitted for an experiment. "
+        "Matrix experiments render the supervisor execution."
     ),
-    short_help="Render the PipelineRun manifest",
+    short_help="Render the execution manifest",
 )
 @experiment_input_options
 @click.option(
     "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to reference in the rendered PipelineRun.",
+    help="Execution definition name to reference in the rendered manifest.",
 )
 def experiment_render_pipelinerun(**kwargs: object) -> int:
     return invoke_handler(cmd_render_pipelinerun, **kwargs)
@@ -336,27 +373,27 @@ def experiment_render_deployment(**kwargs: object) -> int:
     "run",
     help=(
         "Submit an experiment to the cluster and optionally follow it. "
-        "Matrix experiments submit a supervisor PipelineRun that runs child "
+        "Matrix experiments submit a supervisor execution that runs child "
         "combinations sequentially."
     ),
-    short_help="Submit an experiment as a PipelineRun",
+    short_help="Submit an experiment as an execution",
 )
 @experiment_input_options
 @click.option(
     "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to reference when rendering the PipelineRun.",
+    help="Execution definition name to reference when rendering the manifest.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered PipelineRun manifest to this file before submitting.",
+    help="Write the rendered execution manifest to this file before submitting.",
 )
 @click.option(
     "--follow",
     is_flag=True,
-    help="Follow the PipelineRun after submission.",
+    help="Follow the execution after submission.",
 )
 def experiment_run(**kwargs: object) -> int:
     return invoke_handler(cmd_run, **kwargs)
@@ -365,25 +402,25 @@ def experiment_run(**kwargs: object) -> int:
 @experiment_group.command(
     "cleanup",
     help="Submit a cleanup-only run for an experiment.",
-    short_help="Submit a cleanup-only PipelineRun",
+    short_help="Submit a cleanup-only execution",
 )
 @experiment_input_options
 @click.option(
     "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to reference when rendering the cleanup PipelineRun.",
+    help="Execution definition name to reference when rendering the cleanup manifest.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered cleanup PipelineRun manifest to this file before submitting.",
+    help="Write the rendered cleanup execution manifest to this file before submitting.",
 )
 @click.option(
     "--follow/--no-follow",
     default=True,
     show_default=True,
-    help="Follow the cleanup PipelineRun after submission.",
+    help="Follow the cleanup execution after submission.",
 )
 def experiment_cleanup(**kwargs: object) -> int:
     return invoke_handler(cmd_cleanup, **kwargs)

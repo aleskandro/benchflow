@@ -11,6 +11,7 @@ from .models import (
     BenchmarkProfileSpec,
     DeploymentProfile,
     DeploymentProfileSpec,
+    ExecutionSpec,
     Experiment,
     ExperimentSpec,
     MetricsProfile,
@@ -85,6 +86,7 @@ def load_experiment(path: Path) -> Experiment:
         ttl_seconds_after_finished=int(spec.get("ttl_seconds_after_finished", 3600)),
         stages=StageSpec.from_dict(spec.get("stages")),
         mlflow=MlflowSpec.from_dict(spec.get("mlflow")),
+        execution=ExecutionSpec.from_dict(spec.get("execution")),
     )
 
     return Experiment(
@@ -265,6 +267,7 @@ def load_run_plan_data(raw: dict[str, Any]) -> ResolvedRunPlan:
         kind="RunPlan",
         metadata=metadata,
         profiles=profiles,
+        execution=ExecutionSpec.from_dict(raw.get("execution")),
         model=model,
         deployment=deployment,
         benchmark=benchmark,

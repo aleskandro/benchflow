@@ -140,7 +140,11 @@ def _patch_values(plan: ResolvedRunPlan, values_file: Path) -> dict[str, Any]:
 
 
 def _apply_pipeline_labels(
-    values: dict[str, Any], release_name: str, pipeline_run_name: str
+    values: dict[str, Any],
+    release_name: str,
+    pipeline_run_name: str,
+    *,
+    execution_backend: str,
 ) -> None:
     if not pipeline_run_name:
         return
@@ -148,9 +152,12 @@ def _apply_pipeline_labels(
     template = decode.setdefault("template", {})
     metadata = template.setdefault("metadata", {})
     labels = metadata.setdefault("labels", {})
-    labels["tekton.dev/pipelineRun"] = pipeline_run_name
+    labels["benchflow.io/execution-run"] = pipeline_run_name
+    labels["benchflow.io/execution-backend"] = execution_backend
     labels["benchflow/managed-by"] = "pipeline"
     labels["benchflow/release"] = release_name
+    if execution_backend == "tekton":
+        labels["tekton.dev/pipelineRun"] = pipeline_run_name
 
 
 def _capture_manifests(
@@ -364,7 +371,12 @@ def deploy_llmd(
     step(f"Patching llm-d guide values for release {plan.deployment.release_name}")
     detail(f"Guide directory: {guide_dir}")
     values = _patch_values(plan, values_file)
-    _apply_pipeline_labels(values, plan.deployment.release_name, pipeline_run_name)
+    _apply_pipeline_labels(
+        values,
+        plan.deployment.release_name,
+        pipeline_run_name,
+        execution_backend=plan.execution.backend,
+    )
     values_file.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
 
     env = {

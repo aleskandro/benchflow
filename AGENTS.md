@@ -16,9 +16,9 @@ BenchFlow should stay narrow, explicit, and operationally clear. If a change mak
 - The user-facing entrypoint is `bflow`.
 - The bootstrap path is `bflow bootstrap`.
 - The default namespace is `benchflow`, unless explicitly overridden.
-- Tekton is the execution engine, not the place for business logic.
+- Tekton and Argo are execution backends, not the place for business logic.
 - Python owns the control logic.
-- Tekton YAML should stay orchestration-focused and thin.
+- Tekton and Argo definitions should stay orchestration-focused and thin.
 - The internal contract is the `RunPlan`.
 - Tasks and internal commands should consume the run plan, not a wide flat list of parameters.
 - Keep one real implementation path. Do not keep duplicate paths alive.
@@ -54,6 +54,9 @@ BenchFlow should stay narrow, explicit, and operationally clear. If a change mak
 - Remove dead code when it stops earning its keep.
 - If a future feature is not implemented, leave an explicit Python placeholder rather than a misleading example or half-wired path.
 - Avoid duplicate directory trees that express the same concept twice.
+- BenchFlow is expected to become a packaged CLI.
+- While development is still active, some execution assets may remain at the repo root, outside `src/benchflow/assets`, until the package boundary settles.
+- When that happens, keep the repo-root assets intentional, current, and obviously temporary rather than pretending they are part of the finished packaging story.
 
 ## Working Style
 

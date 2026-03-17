@@ -5,10 +5,13 @@ from pathlib import Path
 
 import click
 
-from ..cluster import CommandError, create_manifest, follow_pipelinerun
-from ..execution import load_run_plan_from_sources
+from ..cluster import CommandError, create_manifest
+from ..execution import (
+    follow_execution,
+    load_run_plan_from_sources,
+    render_execution_manifest,
+)
 from ..models import ResolvedRunPlan, StageSpec, ValidationError
-from ..renderers.tekton import render_pipelinerun
 from .shared import dump_yaml, invoke_handler
 
 
@@ -25,7 +28,7 @@ def _submit_manifest(manifest_yaml: str, namespace: str) -> str:
     submitted = create_manifest(manifest_yaml, namespace)
     name = submitted.get("metadata", {}).get("name")
     if not name:
-        raise CommandError("oc create returned no PipelineRun name")
+        raise CommandError("oc create returned no execution name")
     return str(name)
 
 
@@ -37,7 +40,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
     plan = _load_run_plan(args)
-    manifest = render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+    manifest = render_execution_manifest(
+        plan,
+        execution_name=args.pipeline_name,
+        backend=args.backend,
+    )
     print(dump_yaml(manifest))
     return 0
 
@@ -45,7 +52,11 @@ def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     plan = _load_run_plan(args)
     manifest_yaml = dump_yaml(
-        render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+        render_execution_manifest(
+            plan,
+            execution_name=args.pipeline_name,
+            backend=args.backend,
+        )
     )
 
     if args.output:
@@ -55,7 +66,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        return 0 if follow_pipelinerun(plan.deployment.namespace, name) else 1
+        return (
+            0
+            if follow_execution(
+                plan.deployment.namespace,
+                name,
+                backend=args.backend or plan.execution.backend,
+            )
+            else 1
+        )
     return 0
 
 
@@ -69,7 +88,11 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         cleanup=True,
     )
     manifest_yaml = dump_yaml(
-        render_pipelinerun(plan, pipeline_name=args.pipeline_name)
+        render_execution_manifest(
+            plan,
+            execution_name=args.pipeline_name,
+            backend=args.backend,
+        )
     )
 
     if args.output:
@@ -79,7 +102,15 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        return 0 if follow_pipelinerun(plan.deployment.namespace, name) else 1
+        return (
+            0
+            if follow_execution(
+                plan.deployment.namespace,
+                name,
+                backend=args.backend or plan.execution.backend,
+            )
+            else 1
+        )
     return 0
 
 
@@ -121,15 +152,20 @@ def run_plan_validate(**kwargs: object) -> int:
 
 @run_plan_group.command(
     "render-pipelinerun",
-    help="Render the Tekton PipelineRun manifest for a resolved RunPlan.",
-    short_help="Render a PipelineRun from a RunPlan",
+    help="Render the execution manifest for a resolved RunPlan.",
+    short_help="Render an execution from a RunPlan",
 )
 @run_plan_input_options
 @click.option(
     "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to reference in the rendered PipelineRun.",
+    help="Execution definition name to reference in the rendered manifest.",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(("tekton", "argo")),
+    help="Execution backend override for this RunPlan.",
 )
 def run_plan_render_pipelinerun(**kwargs: object) -> int:
     return invoke_handler(cmd_render_pipelinerun, **kwargs)
@@ -138,24 +174,29 @@ def run_plan_render_pipelinerun(**kwargs: object) -> int:
 @run_plan_group.command(
     "run",
     help="Submit a resolved RunPlan to the cluster and optionally follow it.",
-    short_help="Submit a RunPlan as a PipelineRun",
+    short_help="Submit a RunPlan as an execution",
 )
 @run_plan_input_options
 @click.option(
     "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to reference when rendering the PipelineRun.",
+    help="Execution definition name to reference when rendering the manifest.",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(("tekton", "argo")),
+    help="Execution backend override for this RunPlan.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered PipelineRun manifest to this file before submitting.",
+    help="Write the rendered execution manifest to this file before submitting.",
 )
 @click.option(
     "--follow",
     is_flag=True,
-    help="Follow the PipelineRun after submission.",
+    help="Follow the execution after submission.",
 )
 def run_plan_run(**kwargs: object) -> int:
     return invoke_handler(cmd_run, **kwargs)
@@ -163,26 +204,31 @@ def run_plan_run(**kwargs: object) -> int:
 
 @run_plan_group.command(
     "cleanup",
-    help="Submit a cleanup-only PipelineRun from a resolved RunPlan.",
-    short_help="Submit a cleanup PipelineRun from a RunPlan",
+    help="Submit a cleanup-only execution from a resolved RunPlan.",
+    short_help="Submit a cleanup execution from a RunPlan",
 )
 @run_plan_input_options
 @click.option(
     "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to reference when rendering the cleanup PipelineRun.",
+    help="Execution definition name to reference when rendering the cleanup manifest.",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(("tekton", "argo")),
+    help="Execution backend override for this RunPlan.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered cleanup PipelineRun manifest to this file before submitting.",
+    help="Write the rendered cleanup execution manifest to this file before submitting.",
 )
 @click.option(
     "--follow/--no-follow",
     default=True,
     show_default=True,
-    help="Follow the cleanup PipelineRun after submission.",
+    help="Follow the cleanup execution after submission.",
 )
 def run_plan_cleanup(**kwargs: object) -> int:
     return invoke_handler(cmd_cleanup, **kwargs)

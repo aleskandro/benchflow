@@ -19,6 +19,7 @@ from ..loaders import (
 )
 from ..matrix import require_single_experiment_plan, resolve_experiment_matrix
 from ..models import (
+    ExecutionSpec,
     Experiment,
     ExperimentSpec,
     Metadata,
@@ -101,6 +102,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
             ttl_seconds_after_finished=3600,
             stages=stages,
             mlflow=mlflow,
+            execution=ExecutionSpec(),
         )
         base_experiment = Experiment(
             api_version="benchflow.io/v1alpha1",
@@ -192,6 +194,10 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                 experiment=getattr(args, "mlflow_experiment", None)
                 or base_experiment.spec.mlflow.experiment,
                 tags=mlflow_tags,
+            ),
+            execution=ExecutionSpec(
+                backend=getattr(args, "backend", None)
+                or base_experiment.spec.execution.backend
             ),
         ),
     )
@@ -331,12 +337,12 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
         ),
         click.option(
             "--service-account",
-            help="Service account used by the PipelineRun.",
+            help="Service account used by the execution.",
         ),
         click.option(
             "--ttl-seconds-after-finished",
             type=int,
-            help="TTL for finished PipelineRuns.",
+            help="TTL for finished executions.",
         ),
         click.option(
             "--mlflow-experiment",
@@ -347,6 +353,11 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
             multiple=True,
             metavar="KEY=VALUE",
             help="MLflow tag override. Repeat to set multiple tags.",
+        ),
+        click.option(
+            "--backend",
+            type=click.Choice(("tekton", "argo")),
+            help="Execution backend used to run the experiment.",
         ),
     ]
     for stage_name in ("download", "deploy", "benchmark", "collect", "cleanup"):
@@ -421,14 +432,15 @@ def format_experiment_list(entries: list[dict[str, object]]) -> str:
     status_width = max(
         len("STATUS"), max(len(str(entry["status"])) for entry in entries)
     )
-    name_width = max(
-        len("PIPELINERUN"), max(len(str(entry["name"])) for entry in entries)
-    )
+    name_width = max(len("RUN"), max(len(str(entry["name"])) for entry in entries))
     experiment_width = max(
         len("EXPERIMENT"), max(len(str(entry["experiment"])) for entry in entries)
     )
     platform_width = max(
         len("PLATFORM"), max(len(str(entry["platform"])) for entry in entries)
+    )
+    backend_width = max(
+        len("BACKEND"), max(len(str(entry.get("backend", ""))) for entry in entries)
     )
     mode_width = max(len("MODE"), max(len(str(entry["mode"])) for entry in entries))
     started_width = max(
@@ -436,15 +448,16 @@ def format_experiment_list(entries: list[dict[str, object]]) -> str:
     )
 
     lines = [
-        f"{'STATUS':<{status_width}}  {'PIPELINERUN':<{name_width}}  "
+        f"{'STATUS':<{status_width}}  {'RUN':<{name_width}}  "
         f"{'EXPERIMENT':<{experiment_width}}  {'PLATFORM':<{platform_width}}  "
-        f"{'MODE':<{mode_width}}  {'STARTED':<{started_width}}",
+        f"{'BACKEND':<{backend_width}}  {'MODE':<{mode_width}}  {'STARTED':<{started_width}}",
     ]
     for entry in entries:
         lines.append(
             f"{entry['status']:<{status_width}}  {entry['name']:<{name_width}}  "
             f"{entry['experiment']:<{experiment_width}}  {entry['platform']:<{platform_width}}  "
-            f"{entry['mode']:<{mode_width}}  {entry['start_time']:<{started_width}}"
+            f"{str(entry.get('backend', '')):<{backend_width}}  {entry['mode']:<{mode_width}}  "
+            f"{entry['start_time']:<{started_width}}"
         )
     return "\n".join(lines)
 

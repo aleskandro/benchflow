@@ -36,6 +36,7 @@ CONNECTIVITY_MARKERS = (
 class BootstrapOptions:
     namespace: str = "benchflow"
     install_tekton: bool = True
+    install_argo: bool = False
     install_grafana: bool = True
     tekton_channel: str = "latest"
     models_storage_access_mode: str = "ReadWriteOnce"
@@ -48,6 +49,8 @@ class BootstrapOptions:
 class Installer:
     pipelines_operator_namespace = "openshift-operators"
     pipelines_runtime_namespace = "openshift-pipelines"
+    argo_namespace = "argo"
+    argo_release_version = "v3.7.10"
     nfd_namespace = "openshift-nfd"
     gpu_operator_namespace = "nvidia-gpu-operator"
     nfd_package_name = "nfd"
@@ -85,6 +88,7 @@ class Installer:
 
         self.install_accelerator_prerequisites()
         self.install_tekton_if_needed()
+        self.install_argo_if_needed()
         self.configure_tekton_scc()
         self.install_grafana_if_needed()
         self.install_real_secrets()
@@ -103,11 +107,13 @@ class Installer:
                 ("Grafana namespace", self.grafana_namespace),
                 ("NFD namespace", self.nfd_namespace),
                 ("GPU operator namespace", self.gpu_operator_namespace),
+                ("Argo namespace", self.argo_namespace),
                 (
                     "GPU prerequisites",
                     "NFD operator + instance, GPU operator + ClusterPolicy",
                 ),
                 ("Install Tekton if missing", str(options.install_tekton).lower()),
+                ("Install Argo if missing", str(options.install_argo).lower()),
                 ("Install Grafana if missing", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
                 (
@@ -150,11 +156,13 @@ class Installer:
                 ("Grafana namespace", self.grafana_namespace),
                 ("NFD namespace", self.nfd_namespace),
                 ("GPU operator namespace", self.gpu_operator_namespace),
+                ("Argo namespace", self.argo_namespace),
                 (
                     "GPU prerequisites",
                     "NFD operator + instance, GPU operator + ClusterPolicy",
                 ),
                 ("Tekton install attempted", str(options.install_tekton).lower()),
+                ("Argo install attempted", str(options.install_argo).lower()),
                 ("Grafana install attempted", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
                 (
@@ -462,6 +470,15 @@ class Installer:
                 "tasks.tekton.dev",
                 "pipelines.tekton.dev",
                 "pipelineruns.tekton.dev",
+            )
+        )
+
+    def argo_ready(self) -> bool:
+        return all(
+            self._resource_exists("get", "crd", name)
+            for name in (
+                "workflows.argoproj.io",
+                "workflowtemplates.argoproj.io",
             )
         )
 
@@ -985,6 +1002,64 @@ class Installer:
                 description=f"waiting for {deployment} in {self.pipelines_runtime_namespace}",
             )
 
+    def install_argo_if_needed(self) -> None:
+        if self.argo_ready():
+            success("Argo Workflows CRDs already present")
+            return
+
+        if not self.options.install_argo:
+            detail("Skipping Argo install because --install-argo was not requested")
+            return
+
+        self.ensure_namespace(self.argo_namespace)
+        install_url = (
+            "https://github.com/argoproj/argo-workflows/releases/download/"
+            f"{self.argo_release_version}/install.yaml"
+        )
+        step(
+            f"Installing Argo Workflows {self.argo_release_version} in {self.argo_namespace}"
+        )
+        self._oc(
+            "apply",
+            "-n",
+            self.argo_namespace,
+            "-f",
+            install_url,
+            retry=True,
+            description="applying Argo Workflows install manifest",
+            echo_output=True,
+        )
+
+        step("Waiting for Argo Workflows CRDs")
+        for resource in (
+            "crd/workflows.argoproj.io",
+            "crd/workflowtemplates.argoproj.io",
+        ):
+            self._wait_for_resource(
+                resource=resource,
+                namespace=None,
+                timeout_seconds=600,
+                label=resource,
+            )
+
+        step("Waiting for the Argo workflow controller")
+        self._wait_for_resource(
+            resource="deployment/workflow-controller",
+            namespace=self.argo_namespace,
+            timeout_seconds=600,
+            label=f"deployment/workflow-controller in namespace {self.argo_namespace}",
+        )
+        self._oc(
+            "wait",
+            "--for=condition=available",
+            "--timeout=10m",
+            "deployment/workflow-controller",
+            "-n",
+            self.argo_namespace,
+            retry=True,
+            description=f"waiting for deployment/workflow-controller in {self.argo_namespace}",
+        )
+
     def configure_tekton_scc(self) -> None:
         if not self._resource_exists(
             "get", "namespace", self.pipelines_runtime_namespace
@@ -1141,6 +1216,17 @@ class Installer:
         self.apply_manifest_tree(
             self.repo_root / "tekton" / "pipelines", "Tekton pipelines"
         )
+        if self.argo_ready():
+            self.apply_manifest_tree(
+                self.repo_root / "argo" / "templates",
+                "Argo reusable templates",
+            )
+            self.apply_manifest_tree(
+                self.repo_root / "argo" / "workflows",
+                "Argo workflow templates",
+            )
+        else:
+            detail("Skipping Argo templates because Argo Workflows is not installed")
 
     def discover_grafana_route_host(self) -> str | None:
         if not self._resource_exists("get", "route", "-n", self.grafana_namespace):

@@ -19,12 +19,16 @@ from ..benchmark import (
 from ..cleanup import cleanup_llmd, cleanup_rhoai
 from ..cluster import (
     create_manifest,
-    follow_pipelinerun,
     get_current_namespace,
     resolve_target_base_url,
 )
 from ..deploy import deploy_llmd, deploy_rhoai
-from ..execution import load_run_plan_from_sources, require_platform
+from ..execution import (
+    follow_execution,
+    load_run_plan_from_sources,
+    render_execution_manifest,
+    require_platform,
+)
 from ..install import BootstrapOptions, run_bootstrap
 from ..loaders import load_run_plan_data
 from ..metrics import collect_metrics
@@ -39,7 +43,6 @@ from ..setup import (
     teardown_rhoai,
 )
 from ..repository import clone_repo
-from ..renderers.tekton import render_pipelinerun
 from ..tasking import assert_task_status, write_stage_results
 from ..ui import detail, emit, step, success, warning
 from ..waiting import wait_for_endpoint
@@ -81,6 +84,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         BootstrapOptions(
             namespace=args.namespace or "benchflow",
             install_tekton=not args.skip_tekton_install,
+            install_argo=args.install_argo,
             install_grafana=not args.skip_grafana_install,
             tekton_channel=args.tekton_channel or "latest",
             models_storage_class=args.models_storage_class,
@@ -94,7 +98,15 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     namespace = args.namespace or get_current_namespace()
-    return 0 if follow_pipelinerun(namespace, args.pipelinerun_name) else 1
+    return (
+        0
+        if follow_execution(
+            namespace,
+            args.execution_name,
+            backend=getattr(args, "backend", None),
+        )
+        else 1
+    )
 
 
 def cmd_repo_clone(args: argparse.Namespace) -> int:
@@ -652,9 +664,14 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
 
     plans = [load_run_plan_data(item) for item in raw_run_plans]
     namespaces = {plan.deployment.namespace for plan in plans}
+    execution_backends = {plan.execution.backend for plan in plans}
     if len(namespaces) != 1:
         raise ValidationError(
             "matrix execution requires all child RunPlans to target the same namespace"
+        )
+    if len(execution_backends) != 1:
+        raise ValidationError(
+            "matrix execution requires all child RunPlans to use the same execution backend"
         )
 
     step(
@@ -691,22 +708,24 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
                 f"benchmark={plan.profiles.benchmark}, "
                 f"metrics={plan.profiles.metrics}"
             )
-            step(f"[{index}/{total}] Submitting child PipelineRun")
+            step(f"[{index}/{total}] Submitting child execution")
             detail(descriptor)
-            manifest = render_pipelinerun(
+            manifest = render_execution_manifest(
                 plan,
-                pipeline_name=args.child_pipeline_name,
+                execution_name=args.child_pipeline_name,
                 setup_mode="skip" if setup_hoisted else "auto",
                 teardown=False if setup_hoisted else True,
             )
             submitted = create_manifest(dump_yaml(manifest), plan.deployment.namespace)
             name = str(submitted.get("metadata", {}).get("name") or "")
             if not name:
-                raise ValidationError("child PipelineRun submission returned no name")
-            detail(
-                f"Created PipelineRun {name} in namespace {plan.deployment.namespace}"
+                raise ValidationError("child execution submission returned no name")
+            detail(f"Created execution {name} in namespace {plan.deployment.namespace}")
+            succeeded = follow_execution(
+                plan.deployment.namespace,
+                name,
+                backend=plan.execution.backend,
             )
-            succeeded = follow_pipelinerun(plan.deployment.namespace, name)
             if succeeded:
                 success(f"[{index}/{total}] {name} succeeded")
                 continue
@@ -726,7 +745,7 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
             f"{len(failures)} matrix child run(s) failed: {', '.join(failures)}"
         )
 
-    success(f"Matrix supervisor completed {total} child PipelineRun(s)")
+    success(f"Matrix supervisor completed {total} child execution(s)")
     print("completed")
     return 0
 
@@ -735,7 +754,7 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     "bootstrap",
     help=(
         "Bootstrap BenchFlow into a namespace and install NFD, the NVIDIA GPU "
-        "Operator, Tekton, Grafana, RBAC, and PVCs."
+        "Operator, Tekton, optional Argo Workflows, Grafana, RBAC, and PVCs."
     ),
     short_help="Bootstrap BenchFlow and cluster dependencies",
 )
@@ -752,6 +771,11 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     "--skip-tekton-install",
     is_flag=True,
     help="Do not install Tekton if it is missing.",
+)
+@click.option(
+    "--install-argo",
+    is_flag=True,
+    help="Install Argo Workflows if it is missing.",
 )
 @click.option(
     "--skip-grafana-install",
@@ -981,7 +1005,7 @@ def deploy_group() -> None:
 )
 @click.option(
     "--pipeline-run-name",
-    help="Owning PipelineRun name for log and label propagation.",
+    help="Owning execution name for log and label propagation.",
 )
 @click.option(
     "--no-skip-if-exists",
@@ -1177,7 +1201,7 @@ def benchmark_group() -> None:
 )
 @click.option(
     "--pipeline-run-name",
-    help="Owning PipelineRun name for MLflow tagging.",
+    help="Owning execution name for MLflow tagging.",
 )
 @click.option(
     "--mlflow-run-id-output",
@@ -1271,7 +1295,7 @@ def artifacts_group() -> None:
 )
 @click.option(
     "--pipeline-run-name",
-    help="PipelineRun name to collect artifacts from.",
+    help="Execution name to collect artifacts from.",
 )
 def artifacts_collect_command(**kwargs: object) -> int:
     return invoke_handler(cmd_artifacts_collect, **kwargs)
@@ -1354,8 +1378,8 @@ def mlflow_upload_command(**kwargs: object) -> int:
 
 @click.group(
     "task",
-    help="Internal commands invoked by Tekton tasks inside the BenchFlow image.",
-    short_help="Internal Tekton task entrypoints",
+    help="Internal commands invoked by execution backend tasks inside the BenchFlow image.",
+    short_help="Internal backend task entrypoints",
     hidden=True,
 )
 def task_group() -> None:
@@ -1364,7 +1388,7 @@ def task_group() -> None:
 
 @task_group.command(
     "resolve-run-plan",
-    help="Internal command used by Tekton tasks to resolve a RunPlan into stage files.",
+    help="Internal command used by backend tasks to resolve a RunPlan into stage files.",
     short_help="Resolve a RunPlan into stage files",
 )
 @click.option("--run-plan-json", required=True, help="Inline RunPlan JSON payload.")
@@ -1404,8 +1428,8 @@ def task_resolve_run_plan_command(**kwargs: object) -> int:
 
 @task_group.command(
     "setup-run-plan",
-    help="Internal command used by Tekton to setup platform prerequisites for a RunPlan.",
-    short_help="Setup a RunPlan in Tekton",
+    help="Internal command used by the execution backend to setup platform prerequisites for a RunPlan.",
+    short_help="Setup a RunPlan",
 )
 @click.option("--run-plan-json", required=True, help="Inline RunPlan JSON payload.")
 @click.option(
@@ -1425,8 +1449,8 @@ def task_setup_run_plan_command(**kwargs: object) -> int:
 
 @task_group.command(
     "deploy-run-plan",
-    help="Internal command used by Tekton to deploy the platform described by a RunPlan.",
-    short_help="Deploy a RunPlan in Tekton",
+    help="Internal command used by the execution backend to deploy the platform described by a RunPlan.",
+    short_help="Deploy a RunPlan",
 )
 @click.option("--run-plan-json", required=True, help="Inline RunPlan JSON payload.")
 @click.option(
@@ -1442,7 +1466,7 @@ def task_setup_run_plan_command(**kwargs: object) -> int:
 @click.option(
     "--pipeline-run-name",
     default="",
-    help="Owning PipelineRun name for label and log propagation.",
+    help="Owning execution name for label and log propagation.",
 )
 @click.option(
     "--no-skip-if-exists",
@@ -1467,8 +1491,8 @@ def task_deploy_run_plan_command(**kwargs: object) -> int:
 
 @task_group.command(
     "cleanup-run-plan",
-    help="Internal command used by Tekton to clean up the platform described by a RunPlan.",
-    short_help="Clean up a RunPlan in Tekton",
+    help="Internal command used by the execution backend to clean up the platform described by a RunPlan.",
+    short_help="Clean up a RunPlan",
 )
 @click.option("--run-plan-json", required=True, help="Inline RunPlan JSON payload.")
 @click.option(
@@ -1505,7 +1529,7 @@ def task_cleanup_run_plan_command(**kwargs: object) -> int:
 
 @task_group.command(
     "assert-status",
-    help="Internal command used by Tekton tasks to assert task status transitions.",
+    help="Internal command used by backend tasks to assert task status transitions.",
     short_help="Assert a task status transition",
 )
 @click.option("--task-name", required=True, help="Task name to report in the error.")
@@ -1529,10 +1553,10 @@ def task_assert_status_command(**kwargs: object) -> int:
 @task_group.command(
     "run-experiment-matrix",
     help=(
-        "Internal command used by Tekton to run a cartesian product of resolved "
+        "Internal command used by the execution backend to run a cartesian product of resolved "
         "RunPlans sequentially in the cluster."
     ),
-    short_help="Run a matrix of child PipelineRuns",
+    short_help="Run a matrix of child executions",
 )
 @click.option(
     "--run-plans-json",
@@ -1543,7 +1567,7 @@ def task_assert_status_command(**kwargs: object) -> int:
     "--child-pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Pipeline name to use for the child PipelineRuns.",
+    help="Execution definition name to use for the child executions.",
 )
 def task_run_experiment_matrix_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_run_experiment_matrix, **kwargs)
@@ -1551,13 +1575,18 @@ def task_run_experiment_matrix_command(**kwargs: object) -> int:
 
 @click.command(
     "watch",
-    help="Stream a PipelineRun and report its terminal state.",
-    short_help="Follow a PipelineRun until completion",
+    help="Watch a BenchFlow execution and report its terminal state.",
+    short_help="Follow an execution until completion",
 )
-@click.argument("pipelinerun_name")
+@click.argument("execution_name")
 @click.option(
     "--namespace",
-    help="Namespace that contains the PipelineRun. Defaults to the current oc project.",
+    help="Namespace that contains the execution. Defaults to the current oc project.",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(("tekton", "argo")),
+    help="Execution backend. Defaults to auto-detect by resource name.",
 )
 def watch_command(**kwargs: object) -> int:
     return invoke_handler(cmd_watch, **kwargs)

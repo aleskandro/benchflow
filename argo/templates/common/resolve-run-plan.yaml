@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: benchflow-resolve-run-plan
+  labels:
+    app.kubernetes.io/name: benchflow
+spec:
+  templates:
+    - name: resolve-run-plan
+      inputs:
+        parameters:
+          - name: BENCHFLOW_IMAGE
+          - name: RUN_PLAN
+      container:
+        image: "{{inputs.parameters.BENCHFLOW_IMAGE}}"
+        command:
+          - bflow
+        args:
+          - task
+          - resolve-run-plan
+          - --run-plan-json
+          - "{{inputs.parameters.RUN_PLAN}}"
+          - --stage-download-path
+          - /workspace/workflow-state/stage-download.txt
+          - --stage-deploy-path
+          - /workspace/workflow-state/stage-deploy.txt
+          - --stage-benchmark-path
+          - /workspace/workflow-state/stage-benchmark.txt
+          - --stage-collect-path
+          - /workspace/workflow-state/stage-collect.txt
+          - --stage-cleanup-path
+          - /workspace/workflow-state/stage-cleanup.txt
+        volumeMounts:
+          - name: workflow-state
+            mountPath: /workspace/workflow-state
+      outputs:
+        parameters:
+          - name: stage-download
+            valueFrom:
+              path: /workspace/workflow-state/stage-download.txt
+          - name: stage-deploy
+            valueFrom:
+              path: /workspace/workflow-state/stage-deploy.txt
+          - name: stage-benchmark
+            valueFrom:
+              path: /workspace/workflow-state/stage-benchmark.txt
+          - name: stage-collect
+            valueFrom:
+              path: /workspace/workflow-state/stage-collect.txt
+          - name: stage-cleanup
+            valueFrom:
+              path: /workspace/workflow-state/stage-cleanup.txt

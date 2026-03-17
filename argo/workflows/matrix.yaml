@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: benchflow-matrix
+  labels:
+    app.kubernetes.io/name: benchflow
+spec:
+  entrypoint: pipeline
+  templates:
+    - name: pipeline
+      steps:
+        - - name: run-experiment-matrix
+            templateRef:
+              name: benchflow-run-experiment-matrix
+              template: run-experiment-matrix
+            arguments:
+              parameters:
+                - name: BENCHFLOW_IMAGE
+                  value: "{{workflow.parameters.BENCHFLOW_IMAGE}}"
+                - name: RUN_PLANS
+                  value: "{{workflow.parameters.RUN_PLANS}}"
+                - name: CHILD_PIPELINE_NAME
+                  value: "{{workflow.parameters.CHILD_PIPELINE_NAME}}"
