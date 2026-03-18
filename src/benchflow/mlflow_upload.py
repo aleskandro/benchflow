@@ -121,10 +121,6 @@ def upload_to_mlflow(
 
     client = mlflow.tracking.MlflowClient()
     detail(f"MLflow tracking URI: {explicit_tracking_uri}")
-    run = client.get_run(mlflow_run_id)
-    experiment_id = str(run.info.experiment_id)
-    detail(f"MLflow experiment ID: {experiment_id}")
-    client.set_tag(mlflow_run_id, "mlflow_experiment_id", experiment_id)
     grafana_base_url = grafana_url or _discover_grafana_base_url(
         plan.deployment.namespace
     )
