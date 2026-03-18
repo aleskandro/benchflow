@@ -87,36 +87,36 @@ spec:
             value: /tmp/benchflow-guidellm/huggingface/transformers
         source: |
           set +e
-          : > /workspace/workflow-state/mlflow-run-id.txt
-          : > /workspace/workflow-state/benchmark-start-time.txt
-          : > /workspace/workflow-state/benchmark-end-time.txt
+          workflow_state_dir="/workspace/results/{{inputs.parameters.EXECUTION_NAME}}/workflow-state"
+          mkdir -p "$workflow_state_dir"
+          : > "$workflow_state_dir/mlflow-run-id.txt"
+          : > "$workflow_state_dir/benchmark-start-time.txt"
+          : > "$workflow_state_dir/benchmark-end-time.txt"
           bflow benchmark run \
             --run-plan-json '{{inputs.parameters.RUN_PLAN}}' \
             --output-dir '/workspace/results/{{inputs.parameters.EXECUTION_NAME}}/benchmark' \
             --execution-name '{{inputs.parameters.EXECUTION_NAME}}' \
-            --mlflow-run-id-output /workspace/workflow-state/mlflow-run-id.txt \
-            --benchmark-start-time-output /workspace/workflow-state/benchmark-start-time.txt \
-            --benchmark-end-time-output /workspace/workflow-state/benchmark-end-time.txt
+            --mlflow-run-id-output "$workflow_state_dir/mlflow-run-id.txt" \
+            --benchmark-start-time-output "$workflow_state_dir/benchmark-start-time.txt" \
+            --benchmark-end-time-output "$workflow_state_dir/benchmark-end-time.txt"
           rc=$?
           if [ "$rc" -eq 0 ]; then
-            echo Succeeded > /workspace/workflow-state/benchmark-status.txt
+            echo Succeeded > "$workflow_state_dir/benchmark-status.txt"
           else
-            echo Failed > /workspace/workflow-state/benchmark-status.txt
+            echo Failed > "$workflow_state_dir/benchmark-status.txt"
           fi
           exit 0
         volumeMounts:
           - name: results
             mountPath: /workspace/results
-          - name: workflow-state
-            mountPath: /workspace/workflow-state
       outputs:
         parameters:
           - name: mlflow-run-id
             valueFrom:
-              path: /workspace/workflow-state/mlflow-run-id.txt
+              path: "/workspace/results/{{inputs.parameters.EXECUTION_NAME}}/workflow-state/mlflow-run-id.txt"
           - name: benchmark-start-time
             valueFrom:
-              path: /workspace/workflow-state/benchmark-start-time.txt
+              path: "/workspace/results/{{inputs.parameters.EXECUTION_NAME}}/workflow-state/benchmark-start-time.txt"
           - name: benchmark-end-time
             valueFrom:
-              path: /workspace/workflow-state/benchmark-end-time.txt
+              path: "/workspace/results/{{inputs.parameters.EXECUTION_NAME}}/workflow-state/benchmark-end-time.txt"

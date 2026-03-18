@@ -69,7 +69,6 @@ def render_workflow(
                     },
                 },
                 {"name": "source", "emptyDir": {}},
-                {"name": "workflow-state", "emptyDir": {}},
             ],
         },
     }

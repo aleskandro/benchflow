@@ -14,6 +14,14 @@ def write_stage_results(
     stage_collect_path: Path,
     stage_cleanup_path: Path,
 ) -> None:
+    for path in (
+        stage_download_path,
+        stage_deploy_path,
+        stage_benchmark_path,
+        stage_collect_path,
+        stage_cleanup_path,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
     stage_download_path.write_text(str(plan.stages.download).lower(), encoding="utf-8")
     stage_deploy_path.write_text(str(plan.stages.deploy).lower(), encoding="utf-8")
     stage_benchmark_path.write_text(

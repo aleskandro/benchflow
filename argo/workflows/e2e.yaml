@@ -20,6 +20,8 @@ spec:
                   value: "{{workflow.parameters.BENCHFLOW_IMAGE}}"
                 - name: RUN_PLAN
                   value: "{{workflow.parameters.RUN_PLAN}}"
+                - name: EXECUTION_NAME
+                  value: "{{workflow.name}}"
         - - name: setup-run-plan
             templateRef:
               name: benchflow-setup-run-plan
@@ -141,6 +143,7 @@ spec:
         source: |
           set +e
           status=0
+          workflow_state_dir="/workspace/results/{{workflow.name}}/workflow-state"
 
           run_or_record() {
             "$@"
@@ -151,11 +154,11 @@ spec:
             return 0
           }
 
-          stage_cleanup="$(cat /workspace/workflow-state/stage-cleanup.txt 2>/dev/null || echo false)"
-          stage_benchmark="$(cat /workspace/workflow-state/stage-benchmark.txt 2>/dev/null || echo false)"
-          stage_collect="$(cat /workspace/workflow-state/stage-collect.txt 2>/dev/null || echo false)"
-          benchmark_status="$(cat /workspace/workflow-state/benchmark-status.txt 2>/dev/null || echo None)"
-          metrics_status="$(cat /workspace/workflow-state/metrics-status.txt 2>/dev/null || echo None)"
+          stage_cleanup="$(cat "$workflow_state_dir/stage-cleanup.txt" 2>/dev/null || echo false)"
+          stage_benchmark="$(cat "$workflow_state_dir/stage-benchmark.txt" 2>/dev/null || echo false)"
+          stage_collect="$(cat "$workflow_state_dir/stage-collect.txt" 2>/dev/null || echo false)"
+          benchmark_status="$(cat "$workflow_state_dir/benchmark-status.txt" 2>/dev/null || echo None)"
+          metrics_status="$(cat "$workflow_state_dir/metrics-status.txt" 2>/dev/null || echo None)"
 
           if [ "$stage_cleanup" = "true" ]; then
             run_or_record bflow task cleanup-run-plan \
@@ -178,9 +181,10 @@ spec:
               --allowed-statuses-text Succeeded,None
           fi
 
+          rm -rf "$workflow_state_dir"
+          rmdir "/workspace/results/{{workflow.name}}" 2>/dev/null || true
+
           exit "$status"
         volumeMounts:
           - name: results
             mountPath: /workspace/results
-          - name: workflow-state
-            mountPath: /workspace/workflow-state

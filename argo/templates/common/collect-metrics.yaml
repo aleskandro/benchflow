@@ -20,6 +20,8 @@ spec:
           - bash
         source: |
           set +e
+          workflow_state_dir="/workspace/results/{{inputs.parameters.EXECUTION_NAME}}/workflow-state"
+          mkdir -p "$workflow_state_dir"
           bflow metrics collect \
             --run-plan-json '{{inputs.parameters.RUN_PLAN}}' \
             --benchmark-start-time '{{inputs.parameters.BENCHMARK_START_TIME}}' \
@@ -27,13 +29,11 @@ spec:
             --artifacts-dir '/workspace/results/{{inputs.parameters.EXECUTION_NAME}}'
           rc=$?
           if [ "$rc" -eq 0 ]; then
-            echo Succeeded > /workspace/workflow-state/metrics-status.txt
+            echo Succeeded > "$workflow_state_dir/metrics-status.txt"
           else
-            echo Failed > /workspace/workflow-state/metrics-status.txt
+            echo Failed > "$workflow_state_dir/metrics-status.txt"
           fi
           exit 0
         volumeMounts:
           - name: results
             mountPath: /workspace/results
-          - name: workflow-state
-            mountPath: /workspace/workflow-state

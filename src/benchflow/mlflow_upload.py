@@ -168,5 +168,7 @@ def upload_to_mlflow(
     )
     success(f"MLflow upload complete for run {mlflow_run_id}")
     if artifacts_dir.exists():
-        _cleanup_dir_contents(artifacts_dir, preserve_names={"platform-state"})
+        _cleanup_dir_contents(
+            artifacts_dir, preserve_names={"platform-state", "workflow-state"}
+        )
     return artifacts_dir

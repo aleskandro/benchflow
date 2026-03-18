@@ -104,6 +104,14 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     )
 
 
+def _write_output_file(path_value: str | Path | None, content: str) -> None:
+    if path_value is None:
+        return
+    path = Path(path_value).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     namespace = args.namespace or get_current_namespace()
     return 0 if follow_execution(namespace, args.execution_name) else 1
@@ -326,28 +334,18 @@ def cmd_benchmark_run(args: argparse.Namespace) -> int:
                 f"run_id={run_id}, start={start_time}, end={end_time}"
             )
         if args.mlflow_run_id_output and run_id:
-            Path(args.mlflow_run_id_output).resolve().write_text(
-                run_id, encoding="utf-8"
-            )
+            _write_output_file(args.mlflow_run_id_output, run_id)
         if args.benchmark_start_time_output and start_time:
-            Path(args.benchmark_start_time_output).resolve().write_text(
-                start_time, encoding="utf-8"
-            )
+            _write_output_file(args.benchmark_start_time_output, start_time)
         if args.benchmark_end_time_output and end_time:
-            Path(args.benchmark_end_time_output).resolve().write_text(
-                end_time, encoding="utf-8"
-            )
+            _write_output_file(args.benchmark_end_time_output, end_time)
         raise
     if args.mlflow_run_id_output:
-        Path(args.mlflow_run_id_output).resolve().write_text(run_id, encoding="utf-8")
+        _write_output_file(args.mlflow_run_id_output, run_id)
     if args.benchmark_start_time_output:
-        Path(args.benchmark_start_time_output).resolve().write_text(
-            start_time, encoding="utf-8"
-        )
+        _write_output_file(args.benchmark_start_time_output, start_time)
     if args.benchmark_end_time_output:
-        Path(args.benchmark_end_time_output).resolve().write_text(
-            end_time, encoding="utf-8"
-        )
+        _write_output_file(args.benchmark_end_time_output, end_time)
 
     if run_id:
         print(run_id)
