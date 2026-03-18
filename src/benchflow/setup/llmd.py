@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from ..assets import render_yaml_documents
 from ..cluster import (
     CommandError,
     require_any_command,
@@ -134,8 +135,44 @@ def _delete_if_exists(kubectl_cmd: str, kind: str, name: str, namespace: str) ->
     )
 
 
+def _namespace_exists(kubectl_cmd: str, namespace: str) -> bool:
+    result = run_command(
+        [kubectl_cmd, "get", "namespace", namespace, "-o", "name"],
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _ensure_namespace(kubectl_cmd: str, namespace: str) -> None:
+    if _namespace_exists(kubectl_cmd, namespace):
+        return
+    run_command([kubectl_cmd, "create", "namespace", namespace])
+
+
+def _apply_runner_rbac_in_istio_system(
+    kubectl_cmd: str, benchflow_namespace: str
+) -> None:
+    documents = render_yaml_documents(
+        "bootstrap/rbac/runner-istio-system.yaml",
+        {"BENCHFLOW_NAMESPACE": benchflow_namespace},
+    )
+    run_command(
+        [kubectl_cmd, "apply", "-f", "-"],
+        input_text=yaml.safe_dump_all(documents, sort_keys=False),
+    )
+
+
 def _helm_release_names(namespace: str) -> set[str]:
-    payload = run_json_command(["helm", "list", "-n", namespace, "-o", "json"])
+    try:
+        payload = run_json_command(["helm", "list", "-n", namespace, "-o", "json"])
+    except CommandError as exc:
+        if "secrets is forbidden" in str(exc):
+            raise CommandError(
+                f"missing RBAC to inspect Helm releases in namespace {namespace}; "
+                "rerun `bflow bootstrap` to reconcile the runner permissions"
+            ) from exc
+        raise
     return {str(item.get("name") or "") for item in payload}
 
 
@@ -304,6 +341,10 @@ def setup_llmd(
             _run_gateway_provider_script(gateway_provider_dir, "apply")
             state["gateway_dependencies_managed"] = True
             _persist_state(state, state_path)
+
+        step("Ensuring llm-d Istio namespace and runner RBAC")
+        _ensure_namespace(kubectl_cmd, "istio-system")
+        _apply_runner_rbac_in_istio_system(kubectl_cmd, plan.deployment.namespace)
 
         istio_releases_present_before = {
             "istio-base",
