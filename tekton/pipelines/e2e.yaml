@@ -162,6 +162,8 @@ spec:
           value: $(params.RUN_PLAN)
         - name: PIPELINE_RUN_NAME
           value: "$(context.pipelineRun.name)"
+        - name: MLFLOW_RUN_ID
+          value: "$(tasks.benchmark.results.mlflow-run-id)"
       workspaces:
         - name: artifacts
           workspace: results
@@ -190,6 +192,8 @@ spec:
           value: "$(tasks.benchmark.results.benchmark-start-time)"
         - name: BENCHMARK_END_TIME
           value: "$(tasks.benchmark.results.benchmark-end-time)"
+        - name: MLFLOW_RUN_ID
+          value: "$(tasks.benchmark.results.mlflow-run-id)"
       workspaces:
         - name: artifacts
           workspace: results

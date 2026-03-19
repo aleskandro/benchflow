@@ -45,6 +45,7 @@ from ..toolbox import (
     run_plan_benchmark,
     setup_platform,
     teardown_platform,
+    upload_artifact_directory,
     upload_plan_results,
 )
 from ..ui import detail
@@ -598,7 +599,15 @@ def cmd_artifacts_collect(args: argparse.Namespace) -> int:
             execution_name=args.execution_name or "",
             artifacts_dir=args.artifacts_dir,
         ),
+        mlflow_run_id=args.mlflow_run_id or "",
     )
+    if args.upload_direct_to_mlflow and args.mlflow_run_id:
+        upload_artifact_directory(
+            mlflow_run_id=args.mlflow_run_id,
+            artifacts_dir=artifact_dir,
+            artifact_path_prefix=str(args.artifact_path_prefix or ""),
+            cleanup_after_upload=bool(args.cleanup_after_upload),
+        )
     print(artifact_dir)
     return 0
 
@@ -610,7 +619,15 @@ def cmd_metrics_collect(args: argparse.Namespace) -> int:
         benchmark_start_time=args.benchmark_start_time,
         benchmark_end_time=args.benchmark_end_time,
         context=_execution_context(artifacts_dir=args.artifacts_dir),
+        mlflow_run_id=args.mlflow_run_id or "",
     )
+    if args.upload_direct_to_mlflow and args.mlflow_run_id:
+        upload_artifact_directory(
+            mlflow_run_id=args.mlflow_run_id,
+            artifacts_dir=metrics_dir,
+            artifact_path_prefix=str(args.artifact_path_prefix or ""),
+            cleanup_after_upload=bool(args.cleanup_after_upload),
+        )
     print(metrics_dir)
     return 0
 
@@ -1348,6 +1365,25 @@ def artifacts_group() -> None:
     "--execution-name",
     help="Execution name to collect artifacts from.",
 )
+@click.option(
+    "--mlflow-run-id",
+    help="If set, upload the collected artifacts directly to this MLflow run.",
+)
+@click.option(
+    "--artifact-path-prefix",
+    default="",
+    help="MLflow artifact path prefix used when --mlflow-run-id is set.",
+)
+@click.option(
+    "--cleanup-after-upload",
+    is_flag=True,
+    help="Delete the local artifact directory contents after a direct MLflow upload.",
+)
+@click.option(
+    "--upload-direct-to-mlflow",
+    is_flag=True,
+    help="Upload the collected artifacts directly to MLflow from this command.",
+)
 def artifacts_collect_command(**kwargs: object) -> int:
     return invoke_handler(cmd_artifacts_collect, **kwargs)
 
@@ -1382,6 +1418,25 @@ def metrics_group() -> None:
     required=True,
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     help="Directory where collected metrics should be written.",
+)
+@click.option(
+    "--mlflow-run-id",
+    help="If set, upload the collected metrics directly to this MLflow run.",
+)
+@click.option(
+    "--artifact-path-prefix",
+    default="",
+    help="MLflow artifact path prefix used when --mlflow-run-id is set.",
+)
+@click.option(
+    "--cleanup-after-upload",
+    is_flag=True,
+    help="Delete the local metrics directory contents after a direct MLflow upload.",
+)
+@click.option(
+    "--upload-direct-to-mlflow",
+    is_flag=True,
+    help="Upload the collected metrics directly to MLflow from this command.",
 )
 def metrics_collect_command(**kwargs: object) -> int:
     return invoke_handler(cmd_metrics_collect, **kwargs)

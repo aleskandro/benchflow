@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 from ..contracts import ExecutionContext, ResolvedRunPlan, ValidationError
 from ..metrics import collect_metrics
 from ..remote_jobs import (
-    REMOTE_ARTIFACTS_DIR,
-    copy_remote_directory,
+    remote_job_artifacts_dir,
     remote_run_plan_json,
     run_remote_job,
 )
@@ -18,14 +19,18 @@ def collect_plan_metrics(
     benchmark_start_time: str,
     benchmark_end_time: str,
     context: ExecutionContext,
+    mlflow_run_id: str = "",
 ) -> Path:
     if context.artifacts_dir is None:
         raise ValidationError("metrics collection requires an artifacts directory")
     if plan.target_cluster.enabled():
+        direct_upload = bool(
+            mlflow_run_id and os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+        )
         remote = run_remote_job(
             plan,
             job_kind="metrics",
-            args=[
+            args_builder=lambda job_name: [
                 "metrics",
                 "collect",
                 "--run-plan-json",
@@ -35,15 +40,34 @@ def collect_plan_metrics(
                 "--benchmark-end-time",
                 benchmark_end_time,
                 "--artifacts-dir",
-                REMOTE_ARTIFACTS_DIR,
+                remote_job_artifacts_dir(job_name),
+                *(
+                    [
+                        "--mlflow-run-id",
+                        mlflow_run_id,
+                        "--artifact-path-prefix",
+                        "target/metrics",
+                        "--cleanup-after-upload",
+                        "--upload-direct-to-mlflow",
+                    ]
+                    if direct_upload
+                    else []
+                ),
             ],
+            mount_results_pvc=True,
         )
         metrics_dir = context.artifacts_dir / "metrics"
-        copy_remote_directory(
-            plan,
-            pod_name=remote.pod_name,
-            remote_path=f"{REMOTE_ARTIFACTS_DIR}/metrics",
-            local_dir=metrics_dir,
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        (metrics_dir / "remote-target-metrics.json").write_text(
+            json.dumps(
+                {
+                    "remote_job_name": remote.job_name,
+                    "remote_path": f"{remote_job_artifacts_dir(remote.job_name)}/metrics",
+                    "uploaded_to_mlflow": direct_upload,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
         return metrics_dir
     return collect_metrics(

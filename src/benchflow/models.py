@@ -126,7 +126,6 @@ class MlflowSpec:
 
 @dataclass(slots=True)
 class ExecutionSpec:
-    backend: str = "tekton"
     timeout: str = "3h"
 
     @classmethod

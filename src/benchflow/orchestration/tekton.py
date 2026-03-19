@@ -110,7 +110,6 @@ def render_matrix_pipelinerun(
     namespaces = {plan.deployment.namespace for plan in plans}
     service_accounts = {plan.service_account for plan in plans}
     ttl_values = {plan.ttl_seconds_after_finished for plan in plans}
-    backends = {plan.execution.backend for plan in plans}
     kubeconfig_secrets = {plan.target_cluster.kubeconfig_secret for plan in plans}
     inline_kubeconfigs = {
         str(plan.target_cluster.kubeconfig or "").strip() for plan in plans
@@ -125,10 +124,6 @@ def render_matrix_pipelinerun(
         )
     if len(ttl_values) != 1:
         raise ValidationError("matrix submission requires a consistent TTL")
-    if backends != {"tekton"}:
-        raise ValidationError(
-            "Tekton matrix submission requires all child RunPlans to use the tekton backend"
-        )
     if len(kubeconfig_secrets) != 1:
         raise ValidationError(
             "matrix submission requires all runs to use the same target kubeconfig secret"

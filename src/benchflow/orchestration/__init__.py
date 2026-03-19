@@ -1,15 +1,12 @@
-from .base import ExecutionOrchestrator
 from .service import (
     DEFAULT_EXECUTION_NAME,
     DEFAULT_MATRIX_EXECUTION_NAME,
     cancel_execution,
     follow_execution,
     get_execution,
-    get_execution_backend,
     list_execution_steps,
     list_benchflow_executions,
     load_run_plan_from_sources,
-    normalize_execution_backend,
     render_execution_manifest,
     render_matrix_execution_manifest,
     require_platform,
@@ -18,20 +15,16 @@ from .service import (
     submit_execution_manifest,
     summarize_execution,
 )
-from .tekton import TektonOrchestrator
 
 __all__ = [
     "DEFAULT_EXECUTION_NAME",
     "DEFAULT_MATRIX_EXECUTION_NAME",
     "cancel_execution",
-    "ExecutionOrchestrator",
     "follow_execution",
     "get_execution",
-    "get_execution_backend",
     "list_execution_steps",
     "list_benchflow_executions",
     "load_run_plan_from_sources",
-    "normalize_execution_backend",
     "render_execution_manifest",
     "render_matrix_execution_manifest",
     "require_platform",
@@ -39,5 +32,4 @@ __all__ = [
     "stream_execution_logs",
     "submit_execution_manifest",
     "summarize_execution",
-    "TektonOrchestrator",
 ]

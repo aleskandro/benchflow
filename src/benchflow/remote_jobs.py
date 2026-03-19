@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -21,8 +22,9 @@ from .models import ResolvedRunPlan, sanitize_name
 from .ui import detail
 
 DEFAULT_REMOTE_IMAGE = "ghcr.io/albertoperdomo2/benchflow/benchflow:latest"
-REMOTE_BENCHMARK_DIR = "/tmp/benchflow-remote/benchmark"
-REMOTE_ARTIFACTS_DIR = "/tmp/benchflow-remote/artifacts"
+REMOTE_RESULTS_PVC = "benchmark-results"
+REMOTE_RESULTS_MOUNT = "/benchmark-results"
+REMOTE_RESULTS_ROOT = f"{REMOTE_RESULTS_MOUNT}/remote-jobs"
 
 _PASSTHROUGH_ENV = (
     "HF_TOKEN",
@@ -83,19 +85,19 @@ def _remote_env(extra_env: dict[str, str] | None = None) -> list[dict[str, str]]
 def _create_remote_job(
     plan: ResolvedRunPlan,
     *,
+    job_name: str,
     job_kind: str,
     args: list[str],
     env: dict[str, str] | None = None,
     volume_mounts: list[dict[str, Any]] | None = None,
     volumes: list[dict[str, Any]] | None = None,
-) -> str:
+) -> None:
     safe_kind = sanitize_name(job_kind, max_length=20)
-    safe_name = sanitize_name(plan.metadata.name, max_length=20)
     manifest = {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "generateName": f"benchflow-{safe_kind}-{safe_name}-",
+            "name": job_name,
             "namespace": plan.deployment.namespace,
             "labels": {
                 "app.kubernetes.io/name": "benchflow",
@@ -133,15 +135,66 @@ def _create_remote_job(
         },
     }
     with use_kubeconfig(plan.target_cluster.kubeconfig):
-        created = create_manifest(
-            yaml.safe_dump(manifest, sort_keys=False),
-            plan.deployment.namespace,
+        create_manifest(
+            yaml.safe_dump(manifest, sort_keys=False), plan.deployment.namespace
         )
-    job_name = str(created.get("metadata", {}).get("name") or "").strip()
-    if not job_name:
-        raise CommandError("remote job submission returned no job name")
     detail(f"Created remote {job_kind} job {job_name}")
-    return job_name
+
+
+def _generate_remote_job_name(plan: ResolvedRunPlan, job_kind: str) -> str:
+    safe_kind = sanitize_name(job_kind, max_length=20)
+    safe_name = sanitize_name(plan.metadata.name, max_length=20)
+    suffix = secrets.token_hex(2)
+    return f"benchflow-{safe_kind}-{safe_name}-{suffix}"
+
+
+def remote_job_results_dir(job_name: str) -> str:
+    return f"{REMOTE_RESULTS_ROOT}/{job_name}"
+
+
+def remote_job_benchmark_dir(job_name: str) -> str:
+    return f"{remote_job_results_dir(job_name)}/benchmark"
+
+
+def remote_job_artifacts_dir(job_name: str) -> str:
+    return f"{remote_job_results_dir(job_name)}/artifacts"
+
+
+def _merge_volume_mounts(
+    current: list[dict[str, Any]] | None,
+    extra: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = list(current or [])
+    existing_names = {str(item.get("name") or "") for item in merged}
+    for item in extra:
+        if str(item.get("name") or "") not in existing_names:
+            merged.append(item)
+    return merged
+
+
+def _merge_volumes(
+    current: list[dict[str, Any]] | None,
+    extra: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = list(current or [])
+    existing_names = {str(item.get("name") or "") for item in merged}
+    for item in extra:
+        if str(item.get("name") or "") not in existing_names:
+            merged.append(item)
+    return merged
+
+
+def _results_volume_mounts() -> list[dict[str, Any]]:
+    return [{"name": "benchmark-results", "mountPath": REMOTE_RESULTS_MOUNT}]
+
+
+def _results_volumes() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "benchmark-results",
+            "persistentVolumeClaim": {"claimName": REMOTE_RESULTS_PVC},
+        }
+    ]
 
 
 def _list_job_pods(namespace: str, job_name: str, kubeconfig: str) -> list[str]:
@@ -229,42 +282,159 @@ def wait_for_remote_job(
     raise CommandError(f"timed out waiting for remote job {job_name}")
 
 
-def copy_remote_directory(
-    plan: ResolvedRunPlan,
-    *,
-    pod_name: str,
-    remote_path: str,
-    local_dir: Path,
+def _create_reader_pod(plan: ResolvedRunPlan, *, pod_name: str) -> None:
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "namespace": plan.deployment.namespace,
+            "labels": {
+                "app.kubernetes.io/name": "benchflow",
+                "benchflow.io/experiment": plan.metadata.name,
+                "benchflow.io/remote-job-kind": "reader",
+            },
+        },
+        "spec": {
+            "restartPolicy": "Never",
+            "serviceAccountName": plan.service_account,
+            "containers": [
+                {
+                    "name": "main",
+                    "image": _remote_image(),
+                    "command": ["sh", "-c", "sleep 600"],
+                    "volumeMounts": _results_volume_mounts(),
+                }
+            ],
+            "volumes": _results_volumes(),
+        },
+    }
+    with use_kubeconfig(plan.target_cluster.kubeconfig):
+        create_manifest(
+            yaml.safe_dump(manifest, sort_keys=False), plan.deployment.namespace
+        )
+
+
+def _wait_for_reader_pod(
+    plan: ResolvedRunPlan, *, pod_name: str, timeout_seconds: int = 120
 ) -> None:
     kubectl_cmd = require_any_command("oc", "kubectl")
-    local_dir.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + timeout_seconds
     with use_kubeconfig(plan.target_cluster.kubeconfig):
-        run_command(
-            [
-                kubectl_cmd,
-                "cp",
-                f"{plan.deployment.namespace}/{pod_name}:{remote_path}/.",
-                str(local_dir),
-            ]
-        )
+        while time.time() < deadline:
+            payload = run_json_command(
+                [
+                    kubectl_cmd,
+                    "get",
+                    "pod",
+                    pod_name,
+                    "-n",
+                    plan.deployment.namespace,
+                    "-o",
+                    "json",
+                ]
+            )
+            phase = str(payload.get("status", {}).get("phase") or "")
+            if phase == "Running":
+                return
+            if phase in {"Failed", "Succeeded"}:
+                raise CommandError(
+                    f"remote reader pod {pod_name} exited before becoming ready"
+                )
+            time.sleep(2)
+    raise CommandError(f"timed out waiting for remote reader pod {pod_name}")
+
+
+def copy_remote_results_directory(
+    plan: ResolvedRunPlan,
+    *,
+    remote_path: str,
+    local_dir: Path,
+    cleanup: bool = True,
+) -> None:
+    kubectl_cmd = require_any_command("oc", "kubectl")
+    reader_pod = _generate_remote_job_name(plan, "reader")
+    local_dir.mkdir(parents=True, exist_ok=True)
+    _create_reader_pod(plan, pod_name=reader_pod)
+    try:
+        _wait_for_reader_pod(plan, pod_name=reader_pod)
+        with use_kubeconfig(plan.target_cluster.kubeconfig):
+            run_command(
+                [
+                    kubectl_cmd,
+                    "cp",
+                    f"{plan.deployment.namespace}/{reader_pod}:{remote_path}/.",
+                    str(local_dir),
+                ]
+            )
+            if cleanup:
+                run_command(
+                    [
+                        kubectl_cmd,
+                        "exec",
+                        "-n",
+                        plan.deployment.namespace,
+                        reader_pod,
+                        "-c",
+                        "main",
+                        "--",
+                        "rm",
+                        "-rf",
+                        remote_path,
+                    ],
+                    check=False,
+                )
+    finally:
+        with use_kubeconfig(plan.target_cluster.kubeconfig):
+            run_command(
+                [
+                    kubectl_cmd,
+                    "delete",
+                    "pod",
+                    reader_pod,
+                    "-n",
+                    plan.deployment.namespace,
+                    "--ignore-not-found",
+                    "--wait=false",
+                ],
+                check=False,
+            )
 
 
 def run_remote_job(
     plan: ResolvedRunPlan,
     *,
     job_kind: str,
-    args: list[str],
+    args: list[str] | None = None,
+    args_builder: Callable[[str], list[str]] | None = None,
     env: dict[str, str] | None = None,
     volume_mounts: list[dict[str, Any]] | None = None,
     volumes: list[dict[str, Any]] | None = None,
     timeout_seconds: int = 3600,
+    mount_results_pvc: bool = False,
 ) -> RemoteJobResult:
-    job_name = _create_remote_job(
+    if (args is None) == (args_builder is None):
+        raise CommandError(
+            "provide exactly one of args or args_builder for remote jobs"
+        )
+    job_name = _generate_remote_job_name(plan, job_kind)
+    resolved_args = list(
+        args_builder(job_name) if args_builder is not None else args or []
+    )
+    resolved_volume_mounts = volume_mounts
+    resolved_volumes = volumes
+    if mount_results_pvc:
+        resolved_volume_mounts = _merge_volume_mounts(
+            resolved_volume_mounts, _results_volume_mounts()
+        )
+        resolved_volumes = _merge_volumes(resolved_volumes, _results_volumes())
+    _create_remote_job(
         plan,
+        job_name=job_name,
         job_kind=job_kind,
-        args=args,
+        args=resolved_args,
         env=env,
-        volume_mounts=volume_mounts,
-        volumes=volumes,
+        volume_mounts=resolved_volume_mounts,
+        volumes=resolved_volumes,
     )
     return wait_for_remote_job(plan, job_name=job_name, timeout_seconds=timeout_seconds)

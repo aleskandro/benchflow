@@ -203,12 +203,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        backend = (
-            plan_or_plans.execution.backend
-            if hasattr(plan_or_plans, "execution")
-            else plan_or_plans[0].execution.backend
-        )
-        return 0 if follow_execution(namespace, name, backend=backend) else 1
+        return 0 if follow_execution(namespace, name) else 1
     return 0
 
 
@@ -231,12 +226,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        backend = (
-            plan_or_plans.execution.backend
-            if hasattr(plan_or_plans, "execution")
-            else plan_or_plans[0].execution.backend
-        )
-        return 0 if follow_execution(namespace, name, backend=backend) else 1
+        return 0 if follow_execution(namespace, name) else 1
     return 0
 
 

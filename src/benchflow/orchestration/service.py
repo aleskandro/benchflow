@@ -12,14 +12,11 @@ from ..setup import load_setup_state
 from ..toolbox import setup_platform, teardown_platform
 from ..ui import detail, step, success, warning
 from .tekton import TektonOrchestrator
-from .base import ExecutionOrchestrator
 
 DEFAULT_EXECUTION_NAME = "benchflow-e2e"
 DEFAULT_MATRIX_EXECUTION_NAME = "benchflow-matrix"
 
-_BACKENDS: dict[str, ExecutionOrchestrator] = {
-    "tekton": TektonOrchestrator(),
-}
+_TEKTON = TektonOrchestrator()
 
 
 def load_run_plan_from_sources(
@@ -45,32 +42,15 @@ def require_platform(plan: ResolvedRunPlan, platform: str) -> None:
         )
 
 
-def normalize_execution_backend(name: str | None) -> str:
-    backend = str(name or "tekton").strip().lower()
-    if backend not in _BACKENDS:
-        choices = ", ".join(sorted(_BACKENDS))
-        raise ValidationError(
-            f"unsupported execution backend: {backend!r}; expected one of: {choices}"
-        )
-    return backend
-
-
-def get_execution_backend(name: str | None) -> ExecutionOrchestrator:
-    return _BACKENDS[normalize_execution_backend(name)]
-
-
 def render_execution_manifest(
     plan: ResolvedRunPlan,
     *,
     execution_name: str = DEFAULT_EXECUTION_NAME,
     setup_mode: str = "auto",
     teardown: bool = True,
-    backend: str | None = None,
     benchflow_image: str | None = None,
 ) -> dict[str, Any]:
-    backend_name = normalize_execution_backend(backend or plan.execution.backend)
-    plan.execution.backend = backend_name
-    return get_execution_backend(backend_name).render_run(
+    return _TEKTON.render_run(
         plan,
         execution_name=execution_name,
         setup_mode=setup_mode,
@@ -84,21 +64,11 @@ def render_matrix_execution_manifest(
     *,
     execution_name: str = DEFAULT_MATRIX_EXECUTION_NAME,
     child_execution_name: str = DEFAULT_EXECUTION_NAME,
-    backend: str | None = None,
     benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     if not plans:
         raise ValidationError("matrix submission requires at least one RunPlan")
-    backend_name = normalize_execution_backend(backend or plans[0].execution.backend)
-    if {normalize_execution_backend(plan.execution.backend) for plan in plans} != {
-        backend_name
-    }:
-        raise ValidationError(
-            "matrix submission requires all child RunPlans to use the same execution backend"
-        )
-    for plan in plans:
-        plan.execution.backend = backend_name
-    return get_execution_backend(backend_name).render_matrix(
+    return _TEKTON.render_matrix(
         plans,
         execution_name=execution_name,
         child_execution_name=child_execution_name,
@@ -107,14 +77,13 @@ def render_matrix_execution_manifest(
 
 
 def _execution_summaries_for_backend(namespace: str) -> list[dict[str, Any]]:
-    backend = get_execution_backend("tekton")
     try:
-        items = backend.list(
+        items = _TEKTON.list(
             namespace, label_selector="app.kubernetes.io/name=benchflow"
         )
     except CommandError:
         return []
-    return [backend.summarize(item).to_dict() for item in items]
+    return [_TEKTON.summarize(item).to_dict() for item in items]
 
 
 def list_benchflow_executions(
@@ -129,98 +98,57 @@ def list_benchflow_executions(
     return summaries
 
 
-def _detect_execution_backend(namespace: str, name: str) -> str:
-    backend_name = "tekton"
-    if get_execution_backend(backend_name).get(namespace, name) is None:
+def _ensure_execution_exists(namespace: str, name: str) -> None:
+    if _TEKTON.get(namespace, name) is None:
         raise CommandError(
             f"no BenchFlow execution named {name!r} found in {namespace}"
         )
-    return backend_name
 
 
-def get_execution(
-    namespace: str, name: str, *, backend: str | None = None
-) -> dict[str, Any]:
-    backend_name = (
-        normalize_execution_backend(backend)
-        if backend
-        else _detect_execution_backend(namespace, name)
-    )
-    payload = get_execution_backend(backend_name).get(namespace, name)
+def get_execution(namespace: str, name: str) -> dict[str, Any]:
+    payload = _TEKTON.get(namespace, name)
     if payload is None:
         raise CommandError(f"PipelineRun {name} in namespace {namespace} was not found")
     return payload
 
 
-def summarize_execution(
-    namespace: str, name: str, *, backend: str | None = None
-) -> dict[str, Any]:
-    backend_name = (
-        normalize_execution_backend(backend)
-        if backend
-        else _detect_execution_backend(namespace, name)
-    )
-    payload = get_execution_backend(backend_name).get(namespace, name)
+def summarize_execution(namespace: str, name: str) -> dict[str, Any]:
+    payload = _TEKTON.get(namespace, name)
     if payload is None:
         raise CommandError(f"PipelineRun {name} in namespace {namespace} was not found")
-    return get_execution_backend(backend_name).summarize(payload).to_dict()
+    return _TEKTON.summarize(payload).to_dict()
 
 
-def cancel_execution(namespace: str, name: str, *, backend: str | None = None) -> None:
-    backend_name = (
-        normalize_execution_backend(backend)
-        if backend
-        else _detect_execution_backend(namespace, name)
-    )
-    get_execution_backend(backend_name).cancel(namespace, name)
+def cancel_execution(namespace: str, name: str) -> None:
+    _ensure_execution_exists(namespace, name)
+    _TEKTON.cancel(namespace, name)
 
 
 def follow_execution(
     namespace: str,
     name: str,
     *,
-    backend: str | None = None,
     poll_interval: int = 5,
 ) -> bool:
-    backend_name = (
-        normalize_execution_backend(backend)
-        if backend
-        else _detect_execution_backend(namespace, name)
-    )
-    return get_execution_backend(backend_name).follow(
-        namespace, name, poll_interval=poll_interval
-    )
+    _ensure_execution_exists(namespace, name)
+    return _TEKTON.follow(namespace, name, poll_interval=poll_interval)
 
 
-def list_execution_steps(
-    namespace: str,
-    name: str,
-    *,
-    backend: str | None = None,
-) -> list[str]:
-    backend_name = (
-        normalize_execution_backend(backend)
-        if backend
-        else _detect_execution_backend(namespace, name)
-    )
-    return get_execution_backend(backend_name).list_steps(namespace, name)
+def list_execution_steps(namespace: str, name: str) -> list[str]:
+    _ensure_execution_exists(namespace, name)
+    return _TEKTON.list_steps(namespace, name)
 
 
 def stream_execution_logs(
     namespace: str,
     name: str,
     *,
-    backend: str | None = None,
     step_name: str | None = None,
     all_logs: bool = False,
     all_containers: bool = False,
 ) -> None:
-    backend_name = (
-        normalize_execution_backend(backend)
-        if backend
-        else _detect_execution_backend(namespace, name)
-    )
-    get_execution_backend(backend_name).logs(
+    _ensure_execution_exists(namespace, name)
+    _TEKTON.logs(
         namespace,
         name,
         step_name=step_name,
@@ -249,14 +177,9 @@ def run_matrix_supervisor(
         raise ValidationError("matrix execution requires at least one RunPlan")
 
     namespaces = {plan.deployment.namespace for plan in plans}
-    execution_backends = {plan.execution.backend for plan in plans}
     if len(namespaces) != 1:
         raise ValidationError(
             "matrix execution requires all child RunPlans to target the same namespace"
-        )
-    if len(execution_backends) != 1:
-        raise ValidationError(
-            "matrix execution requires all child RunPlans to use the same execution backend"
         )
 
     step(
@@ -307,11 +230,7 @@ def run_matrix_supervisor(
             )
             name = submit_execution_manifest(manifest, plan.deployment.namespace)
             detail(f"Created execution {name} in namespace {plan.deployment.namespace}")
-            succeeded = follow_execution(
-                plan.deployment.namespace,
-                name,
-                backend=plan.execution.backend,
-            )
+            succeeded = follow_execution(plan.deployment.namespace, name)
             if succeeded:
                 success(f"[{index}/{total}] {name} succeeded")
                 continue

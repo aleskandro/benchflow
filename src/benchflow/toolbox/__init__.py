@@ -1,7 +1,7 @@
 from .artifacts import collect_plan_artifacts
 from .benchmark import generate_plan_report, run_plan_benchmark
 from .metrics import collect_plan_metrics
-from .mlflow import upload_plan_results
+from .mlflow import upload_artifact_directory, upload_plan_results
 from .model import download_cached_model
 from .platform import (
     cleanup_deployment,
@@ -25,5 +25,6 @@ __all__ = [
     "run_plan_benchmark",
     "setup_platform",
     "teardown_platform",
+    "upload_artifact_directory",
     "upload_plan_results",
 ]

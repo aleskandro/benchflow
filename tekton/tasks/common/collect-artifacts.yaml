@@ -19,6 +19,9 @@ spec:
     - name: PIPELINE_RUN_NAME
       type: string
       default: ""
+    - name: MLFLOW_RUN_ID
+      type: string
+      default: ""
   workspaces:
     - name: artifacts
       description: Workspace to save collected artifacts
@@ -33,6 +36,44 @@ spec:
           value: $(params.IMAGE)
         - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
           value: $(workspaces.target-kubeconfig.path)
+        - name: MLFLOW_TRACKING_URI
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-ui-auth
+              key: tracking-uri
+              optional: true
+        - name: MLFLOW_TRACKING_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-ui-auth
+              key: username
+              optional: true
+        - name: MLFLOW_TRACKING_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-ui-auth
+              key: password
+              optional: true
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-s3-secret
+              key: access-key
+              optional: true
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-s3-secret
+              key: secret-key
+              optional: true
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-s3-secret
+              key: region
+              optional: true
+        - name: MLFLOW_TRACKING_INSECURE_TLS
+          value: "true"
       command:
         - bflow
       args:
@@ -44,3 +85,5 @@ spec:
         - $(workspaces.artifacts.path)
         - --execution-name
         - $(params.PIPELINE_RUN_NAME)
+        - --mlflow-run-id
+        - $(params.MLFLOW_RUN_ID)

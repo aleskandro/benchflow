@@ -65,13 +65,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        return (
-            0
-            if follow_execution(
-                plan.deployment.namespace, name, backend=plan.execution.backend
-            )
-            else 1
-        )
+        return 0 if follow_execution(plan.deployment.namespace, name) else 1
     return 0
 
 
@@ -106,13 +100,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     print(name)
 
     if args.follow:
-        return (
-            0
-            if follow_execution(
-                plan.deployment.namespace, name, backend=plan.execution.backend
-            )
-            else 1
-        )
+        return 0 if follow_execution(plan.deployment.namespace, name) else 1
     return 0
 
 

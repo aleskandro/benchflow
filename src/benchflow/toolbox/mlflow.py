@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..contracts import ExecutionContext, ResolvedRunPlan, ValidationError
-from ..mlflow_upload import upload_to_mlflow
+from ..mlflow_upload import upload_artifact_directory_to_mlflow, upload_to_mlflow
 
 
 def upload_plan_results(
@@ -22,4 +24,23 @@ def upload_plan_results(
         benchmark_end_time=benchmark_end_time,
         artifacts_dir=context.artifacts_dir,
         grafana_url=grafana_url,
+    )
+
+
+def upload_artifact_directory(
+    *,
+    mlflow_run_id: str,
+    artifacts_dir: Path,
+    artifact_path_prefix: str = "",
+    cleanup_after_upload: bool = False,
+    preserve_names: set[str] | None = None,
+    exclude_names: set[str] | None = None,
+) -> Path:
+    return upload_artifact_directory_to_mlflow(
+        mlflow_run_id=mlflow_run_id,
+        artifacts_dir=artifacts_dir,
+        artifact_path_prefix=artifact_path_prefix,
+        cleanup_after_upload=cleanup_after_upload,
+        preserve_names=preserve_names,
+        exclude_names=exclude_names,
     )

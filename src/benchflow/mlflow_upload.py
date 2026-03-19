@@ -90,6 +90,76 @@ def _count_files(directory: Path) -> int:
     return sum(1 for path in directory.rglob("*") if path.is_file())
 
 
+def upload_artifact_directory_to_mlflow(
+    *,
+    mlflow_run_id: str,
+    artifacts_dir: Path,
+    artifact_path_prefix: str = "",
+    cleanup_after_upload: bool = False,
+    preserve_names: set[str] | None = None,
+    exclude_names: set[str] | None = None,
+) -> Path:
+    import mlflow
+
+    explicit_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    if explicit_tracking_uri:
+        mlflow.set_tracking_uri(explicit_tracking_uri)
+    if not mlflow_run_id or not explicit_tracking_uri:
+        warning(
+            "Skipping MLflow upload because "
+            + (
+                "the run ID is missing"
+                if not mlflow_run_id
+                else "MLFLOW_TRACKING_URI is not configured"
+            )
+        )
+        return artifacts_dir
+
+    client = mlflow.tracking.MlflowClient()
+    prefix = artifact_path_prefix.strip("/")
+    excluded = exclude_names or set()
+    artifact_count = 0
+
+    if artifacts_dir.exists():
+        for child in sorted(artifacts_dir.iterdir()):
+            if child.name in excluded:
+                continue
+            if child.is_dir():
+                child_count = _count_files(child)
+                if child_count == 0:
+                    continue
+                artifact_path = "/".join(part for part in (prefix, child.name) if part)
+                detail(
+                    f"Uploading directory {child.name} ({child_count} file(s)) to MLflow"
+                    + (f" under {artifact_path}" if artifact_path else "")
+                )
+                client.log_artifacts(
+                    mlflow_run_id,
+                    str(child),
+                    artifact_path=artifact_path or None,
+                )
+                artifact_count += child_count
+            elif child.is_file():
+                detail(
+                    f"Uploading file {child.name} to MLflow"
+                    + (f" under {prefix}" if prefix else "")
+                )
+                client.log_artifact(
+                    mlflow_run_id,
+                    str(child),
+                    artifact_path=prefix or None,
+                )
+                artifact_count += 1
+
+    detail(
+        f"Uploaded {artifact_count} artifact file(s) from {artifacts_dir}"
+        + (f" to {prefix}" if prefix else "")
+    )
+    if cleanup_after_upload and artifacts_dir.exists():
+        _cleanup_dir_contents(artifacts_dir, preserve_names=preserve_names)
+    return artifacts_dir
+
+
 def upload_to_mlflow(
     plan: ResolvedRunPlan,
     *,
@@ -137,28 +207,23 @@ def upload_to_mlflow(
 
     artifact_count = 0
     if artifacts_dir.exists():
-        for child in sorted(artifacts_dir.iterdir()):
-            if child.name == "benchmark":
-                detail(
-                    "Skipping benchmark workspace bundle because GuideLLM already "
-                    "logs its own results, reports, and console output"
-                )
-                continue
-            if child.is_dir():
-                child_count = _count_files(child)
-                if child_count == 0:
-                    continue
-                detail(
-                    f"Uploading directory {child.name} ({child_count} file(s)) to MLflow"
-                )
-                client.log_artifacts(
-                    mlflow_run_id, str(child), artifact_path=child.name
-                )
-                artifact_count += child_count
-            elif child.is_file():
-                detail(f"Uploading file {child.name} to MLflow")
-                client.log_artifact(mlflow_run_id, str(child))
-                artifact_count += 1
+        if (artifacts_dir / "benchmark").exists():
+            detail(
+                "Skipping benchmark workspace bundle because GuideLLM already "
+                "logs its own results, reports, and console output"
+            )
+        before_cleanup = _count_files(artifacts_dir)
+        upload_artifact_directory_to_mlflow(
+            mlflow_run_id=mlflow_run_id,
+            artifacts_dir=artifacts_dir,
+            cleanup_after_upload=False,
+            exclude_names={"benchmark"},
+        )
+        artifact_count = (
+            before_cleanup - _count_files(artifacts_dir / "benchmark")
+            if (artifacts_dir / "benchmark").exists()
+            else before_cleanup
+        )
     detail(
         f"Uploaded {artifact_count} additional artifact file(s) from {artifacts_dir}"
     )

@@ -420,7 +420,7 @@ def deploy_llmd(
         values,
         plan.deployment.release_name,
         execution_name,
-        execution_backend=plan.execution.backend,
+        execution_backend="tekton",
     )
     values_file.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
 

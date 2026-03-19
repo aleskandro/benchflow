@@ -1,22 +1,44 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from ..artifacts import collect_artifacts, collect_execution_logs
 from ..contracts import ExecutionContext, ResolvedRunPlan, ValidationError
 from ..remote_jobs import (
-    REMOTE_ARTIFACTS_DIR,
-    copy_remote_directory,
+    remote_job_artifacts_dir,
     remote_run_plan_json,
     run_remote_job,
 )
+
+
+def _write_remote_reference(
+    path: Path,
+    *,
+    job_name: str,
+    remote_path: str,
+    uploaded_to_mlflow: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "remote_job_name": job_name,
+                "remote_path": remote_path,
+                "uploaded_to_mlflow": uploaded_to_mlflow,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def collect_plan_artifacts(
     plan: ResolvedRunPlan,
     *,
     context: ExecutionContext,
+    mlflow_run_id: str = "",
 ) -> Path:
     if context.artifacts_dir is None:
         raise ValidationError("artifacts collection requires an artifacts directory")
@@ -28,30 +50,50 @@ def collect_plan_artifacts(
                 artifacts_dir=context.artifacts_dir,
                 execution_name=context.execution_name,
             )
+        direct_upload = bool(
+            mlflow_run_id and os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+        )
         remote = run_remote_job(
             plan,
             job_kind="artifacts",
-            args=[
+            args_builder=lambda job_name: [
                 "artifacts",
                 "collect",
                 "--run-plan-json",
                 remote_run_plan_json(plan),
                 "--artifacts-dir",
-                REMOTE_ARTIFACTS_DIR,
+                remote_job_artifacts_dir(job_name),
+                *(
+                    [
+                        "--mlflow-run-id",
+                        mlflow_run_id,
+                        "--artifact-path-prefix",
+                        "target",
+                        "--cleanup-after-upload",
+                        "--upload-direct-to-mlflow",
+                    ]
+                    if direct_upload
+                    else []
+                ),
             ],
-        )
-        copy_remote_directory(
-            plan,
-            pod_name=remote.pod_name,
-            remote_path=REMOTE_ARTIFACTS_DIR,
-            local_dir=context.artifacts_dir,
+            mount_results_pvc=True,
         )
         metadata_path = context.artifacts_dir / "metadata.json"
+        metadata = {}
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text(encoding="utf-8") or "{}")
-            metadata["execution_name"] = context.execution_name
-            metadata["execution_pods"] = execution_pod_count
-            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        metadata["execution_name"] = context.execution_name
+        metadata["execution_pods"] = execution_pod_count
+        metadata["target_artifacts_job"] = remote.job_name
+        metadata["target_artifacts_uploaded_to_mlflow"] = direct_upload
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        if not direct_upload:
+            _write_remote_reference(
+                context.artifacts_dir / "remote-target-artifacts.json",
+                job_name=remote.job_name,
+                remote_path=remote_job_artifacts_dir(remote.job_name),
+                uploaded_to_mlflow=False,
+            )
         return context.artifacts_dir
     return collect_artifacts(
         plan,
