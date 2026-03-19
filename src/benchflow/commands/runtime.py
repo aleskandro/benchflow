@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 from pathlib import Path
 
 import click
@@ -12,6 +14,8 @@ from ..benchmark import (
 )
 from ..cluster import (
     get_current_namespace,
+    require_any_command,
+    run_command,
 )
 from ..contracts import ExecutionContext, ValidationError
 from ..orchestration import (
@@ -22,6 +26,7 @@ from ..orchestration import (
     run_matrix_supervisor,
     stream_execution_logs,
 )
+from ..remote_jobs import remote_run_plan_json, run_remote_job
 from ..install import BootstrapOptions, run_bootstrap
 from ..loaders import load_run_plan_data
 from ..repository import clone_repo
@@ -90,11 +95,26 @@ def _teardown_requested(value: str | None, default: bool = True) -> bool:
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
     repo_root = repo_root_from(args)
+    target_kubeconfig = (
+        str(Path(args.target_kubeconfig).resolve()) if args.target_kubeconfig else None
+    )
+    install_tekton = (
+        args.install_tekton
+        if args.install_tekton is not None
+        else not bool(target_kubeconfig)
+    )
+    install_grafana = (
+        args.install_grafana
+        if args.install_grafana is not None
+        else not bool(target_kubeconfig)
+    )
     return run_bootstrap(
         repo_root,
         BootstrapOptions(
             namespace=args.namespace or "benchflow",
-            install_grafana=not args.skip_grafana_install,
+            install_grafana=install_grafana,
+            install_tekton=install_tekton,
+            target_kubeconfig=target_kubeconfig,
             models_storage_class=args.models_storage_class,
             models_storage_size=args.models_size or "250Gi",
             models_storage_access_mode=args.models_access_mode or "ReadWriteOnce",
@@ -104,12 +124,62 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_target_kubeconfig_secret_create(args: argparse.Namespace) -> int:
+    namespace = args.namespace or get_current_namespace()
+    kubeconfig_path = Path(args.kubeconfig).expanduser().resolve()
+    if not kubeconfig_path.is_file():
+        raise ValidationError(f"kubeconfig file not found: {kubeconfig_path}")
+
+    kubectl_cmd = require_any_command("oc", "kubectl")
+    secret_name = str(args.name).strip()
+    key_name = str(args.key or "kubeconfig").strip()
+    if not secret_name:
+        raise ValidationError("secret name must not be empty")
+    if not key_name:
+        raise ValidationError("secret key must not be empty")
+
+    payload = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": secret_name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/name": "benchflow",
+                "benchflow.io/secret-kind": "target-kubeconfig",
+            },
+        },
+        "type": "Opaque",
+        "data": {
+            key_name: base64.b64encode(kubeconfig_path.read_bytes()).decode("ascii")
+        },
+    }
+    run_command(
+        [kubectl_cmd, "apply", "-n", namespace, "-f", "-"],
+        input_text=json.dumps(payload),
+    )
+    print(secret_name)
+    return 0
+
+
 def _write_output_file(path_value: str | Path | None, content: str) -> None:
     if path_value is None:
         return
     path = Path(path_value).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _has_runtime_plan_source(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            getattr(args, "run_plan_file", None),
+            getattr(args, "run_plan_json", None),
+            getattr(args, "experiment", None),
+            getattr(args, "model", None),
+            getattr(args, "deployment_profile", None),
+        )
+    )
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -280,10 +350,38 @@ def cmd_undeploy_rhoai(args: argparse.Namespace) -> int:
 
 
 def cmd_wait_endpoint(args: argparse.Namespace) -> int:
+    plan = load_runtime_plan(args) if _has_runtime_plan_source(args) else None
+    if plan is not None and plan.target_cluster.enabled():
+        remote_args = [
+            "wait",
+            "endpoint",
+            "--run-plan-json",
+            remote_run_plan_json(plan),
+            "--timeout-seconds",
+            str(args.timeout_seconds),
+            "--retry-interval",
+            str(args.retry_interval),
+        ]
+        if args.target_url:
+            remote_args.extend(["--target-url", args.target_url])
+        if args.endpoint_path:
+            remote_args.extend(["--endpoint-path", args.endpoint_path])
+        if args.verify_tls:
+            remote_args.append("--verify-tls")
+        run_remote_job(
+            plan,
+            job_kind="wait-endpoint",
+            args=remote_args,
+            timeout_seconds=max(args.timeout_seconds + 300, 900),
+        )
+        print("ready")
+        return 0
+
     target_url = args.target_url
     endpoint_path = args.endpoint_path
     if not target_url:
-        plan = load_runtime_plan(args)
+        if plan is None:
+            plan = load_runtime_plan(args)
         target_url, endpoint_path = resolve_target_url(
             plan,
             target_url=args.target_url,
@@ -553,7 +651,11 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
         raise ValidationError("--run-plans-json must contain a non-empty JSON array")
 
     plans = [load_run_plan_data(item) for item in raw_run_plans]
-    run_matrix_supervisor(plans, child_execution_name=args.child_pipeline_name)
+    run_matrix_supervisor(
+        plans,
+        child_execution_name=args.child_pipeline_name,
+        benchflow_image=os.environ.get("BENCHFLOW_IMAGE"),
+    )
     print("completed")
     return 0
 
@@ -576,9 +678,28 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     help="Target namespace. Defaults to benchflow.",
 )
 @click.option(
-    "--skip-grafana-install",
-    is_flag=True,
-    help="Do not install Grafana in the dedicated Grafana namespace.",
+    "--install-grafana/--no-install-grafana",
+    default=None,
+    help=(
+        "Install Grafana in the dedicated Grafana namespace. Defaults to enabled "
+        "for same-cluster bootstrap and disabled when --target-kubeconfig is set."
+    ),
+)
+@click.option(
+    "--install-tekton/--no-install-tekton",
+    default=None,
+    help=(
+        "Install and reconcile Tekton resources on the target cluster. Defaults "
+        "to enabled for same-cluster bootstrap and disabled when --target-kubeconfig is set."
+    ),
+)
+@click.option(
+    "--target-kubeconfig",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "Kubeconfig used to bootstrap a remote target cluster instead of the current one. "
+        "This implies runtime-only bootstrap unless --install-tekton or --install-grafana is set."
+    ),
 )
 @click.option(
     "--models-storage-class",
@@ -602,6 +723,57 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
 )
 def bootstrap_command(**kwargs: object) -> int:
     return invoke_handler(cmd_bootstrap, **kwargs)
+
+
+@click.group(
+    "target",
+    help="Helpers for management-cluster to target-cluster workflows.",
+    short_help="Target-cluster helpers",
+)
+def target_group() -> None:
+    pass
+
+
+@click.group(
+    "kubeconfig-secret",
+    help="Manage target-cluster kubeconfig Secrets for Tekton runs.",
+    short_help="Target kubeconfig Secrets",
+)
+def target_kubeconfig_secret_group() -> None:
+    pass
+
+
+@target_kubeconfig_secret_group.command(
+    "create",
+    help="Create or update a Secret that stores a target-cluster kubeconfig for Tekton runs.",
+    short_help="Create a target kubeconfig Secret",
+)
+@click.option(
+    "--name",
+    required=True,
+    help="Secret name to create or update.",
+)
+@click.option(
+    "--kubeconfig",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Path to the target-cluster kubeconfig file.",
+)
+@click.option(
+    "--namespace",
+    help="Namespace in the management cluster. Defaults to the current project.",
+)
+@click.option(
+    "--key",
+    default="kubeconfig",
+    show_default=True,
+    help="Secret data key that stores the kubeconfig content.",
+)
+def target_kubeconfig_secret_create_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_target_kubeconfig_secret_create, **kwargs)
+
+
+target_group.add_command(target_kubeconfig_secret_group)
 
 
 @click.group(

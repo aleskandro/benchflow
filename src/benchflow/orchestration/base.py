@@ -15,6 +15,7 @@ class ExecutionOrchestrator(Protocol):
         execution_name: str,
         setup_mode: str,
         teardown: bool,
+        benchflow_image: str | None = None,
     ) -> dict[str, Any]: ...
 
     def render_matrix(
@@ -23,6 +24,7 @@ class ExecutionOrchestrator(Protocol):
         *,
         execution_name: str,
         child_execution_name: str,
+        benchflow_image: str | None = None,
     ) -> dict[str, Any]: ...
 
     def get(self, namespace: str, name: str) -> dict[str, Any] | None: ...

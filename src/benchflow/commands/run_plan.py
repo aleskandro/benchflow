@@ -35,6 +35,7 @@ def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
     manifest = render_execution_manifest(
         plan,
         execution_name=args.pipeline_name,
+        benchflow_image=args.benchflow_image,
     )
     print(dump_yaml(manifest))
     return 0
@@ -46,6 +47,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         render_execution_manifest(
             plan,
             execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         )
     )
 
@@ -56,6 +58,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         render_execution_manifest(
             plan,
             execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         ),
         plan.deployment.namespace,
     )
@@ -85,6 +88,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         render_execution_manifest(
             plan,
             execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         )
     )
 
@@ -95,6 +99,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         render_execution_manifest(
             plan,
             execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         ),
         plan.deployment.namespace,
     )
@@ -159,6 +164,10 @@ def run_plan_validate(**kwargs: object) -> int:
     show_default=True,
     help="Pipeline name to reference in the rendered PipelineRun.",
 )
+@click.option(
+    "--benchflow-image",
+    help="BenchFlow control image to use for all Pipeline tasks.",
+)
 def run_plan_render_pipelinerun(**kwargs: object) -> int:
     return invoke_handler(cmd_render_pipelinerun, **kwargs)
 
@@ -174,6 +183,10 @@ def run_plan_render_pipelinerun(**kwargs: object) -> int:
     default="benchflow-e2e",
     show_default=True,
     help="Pipeline name to reference when rendering the PipelineRun.",
+)
+@click.option(
+    "--benchflow-image",
+    help="BenchFlow control image to use for all Pipeline tasks.",
 )
 @click.option(
     "--output",
@@ -200,6 +213,10 @@ def run_plan_run(**kwargs: object) -> int:
     default="benchflow-e2e",
     show_default=True,
     help="Pipeline name to reference when rendering the cleanup PipelineRun.",
+)
+@click.option(
+    "--benchflow-image",
+    help="BenchFlow control image to use for all Pipeline tasks.",
 )
 @click.option(
     "--output",

@@ -17,6 +17,7 @@ _ANSI_DIM = "\033[2m"
 _ANSI_GREEN = "\033[32m"
 _ANSI_RED = "\033[31m"
 _ANSI_CYAN = "\033[36m"
+_TARGET_KUBECONFIG_PATH = "/workspace/target-kubeconfig/kubeconfig"
 
 
 def _common_labels(plan: ResolvedRunPlan, *, backend: str) -> dict[str, str]:
@@ -29,14 +30,42 @@ def _common_labels(plan: ResolvedRunPlan, *, backend: str) -> dict[str, str]:
     }
 
 
+def _serialized_run_plan(plan: ResolvedRunPlan) -> str:
+    payload = plan.to_dict()
+    target_cluster = dict(payload.get("target_cluster") or {})
+    if plan.target_cluster.kubeconfig_secret:
+        target_cluster["kubeconfig"] = _TARGET_KUBECONFIG_PATH
+    payload["target_cluster"] = target_cluster
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
 def render_pipelinerun(
     plan: ResolvedRunPlan,
     *,
     pipeline_name: str,
     setup_mode: str,
     teardown: bool,
+    benchflow_image: str | None = None,
 ) -> dict[str, Any]:
-    run_plan_json = json.dumps(plan.to_dict(), separators=(",", ":"), sort_keys=True)
+    if plan.target_cluster.kubeconfig and not plan.target_cluster.kubeconfig_secret:
+        raise ValidationError(
+            "Tekton execution requires target_cluster.kubeconfig_secret for remote target clusters; "
+            "--target-kubeconfig only works with direct local BenchFlow commands"
+        )
+    run_plan_json = _serialized_run_plan(plan)
+    workspaces: list[dict[str, Any]] = [
+        {
+            "name": "results",
+            "persistentVolumeClaim": {"claimName": "benchmark-results"},
+        },
+        {"name": "source", "emptyDir": {}},
+        {"name": "target-kubeconfig", "emptyDir": {}},
+    ]
+    if plan.target_cluster.kubeconfig_secret:
+        workspaces[-1] = {
+            "name": "target-kubeconfig",
+            "secret": {"secretName": plan.target_cluster.kubeconfig_secret},
+        }
     return {
         "apiVersion": "tekton.dev/v1",
         "kind": "PipelineRun",
@@ -48,22 +77,23 @@ def render_pipelinerun(
             "pipelineRef": {"name": pipeline_name},
             "taskRunTemplate": {"serviceAccountName": plan.service_account},
             "ttlSecondsAfterFinished": plan.ttl_seconds_after_finished,
+            "timeouts": {"pipeline": plan.execution.timeout},
             "params": [
                 {"name": "RUN_PLAN", "value": run_plan_json},
                 {
                     "name": "MODELS_STORAGE_PVC",
                     "value": plan.deployment.model_storage.pvc_name,
                 },
+                {"name": "EXECUTION_TIMEOUT", "value": plan.execution.timeout},
+                *(
+                    [{"name": "BENCHFLOW_IMAGE", "value": benchflow_image}]
+                    if benchflow_image
+                    else []
+                ),
                 {"name": "SETUP_MODE", "value": setup_mode},
                 {"name": "TEARDOWN", "value": str(teardown).lower()},
             ],
-            "workspaces": [
-                {
-                    "name": "results",
-                    "persistentVolumeClaim": {"claimName": "benchmark-results"},
-                },
-                {"name": "source", "emptyDir": {}},
-            ],
+            "workspaces": workspaces,
         },
     }
 
@@ -73,6 +103,7 @@ def render_matrix_pipelinerun(
     *,
     pipeline_name: str,
     child_pipeline_name: str,
+    benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     if not plans:
         raise ValidationError("matrix submission requires at least one RunPlan")
@@ -120,6 +151,11 @@ def render_matrix_pipelinerun(
             "ttlSecondsAfterFinished": next(iter(ttl_values)),
             "params": [
                 {"name": "RUN_PLANS", "value": run_plans_json},
+                *(
+                    [{"name": "BENCHFLOW_IMAGE", "value": benchflow_image}]
+                    if benchflow_image
+                    else []
+                ),
                 {"name": "CHILD_PIPELINE_NAME", "value": child_pipeline_name},
             ],
         },
@@ -426,12 +462,14 @@ class TektonOrchestrator:
         execution_name: str,
         setup_mode: str,
         teardown: bool,
+        benchflow_image: str | None = None,
     ) -> dict[str, Any]:
         return render_pipelinerun(
             plan,
             pipeline_name=execution_name,
             setup_mode=setup_mode,
             teardown=teardown,
+            benchflow_image=benchflow_image,
         )
 
     def render_matrix(
@@ -440,11 +478,13 @@ class TektonOrchestrator:
         *,
         execution_name: str,
         child_execution_name: str,
+        benchflow_image: str | None = None,
     ) -> dict[str, Any]:
         return render_matrix_pipelinerun(
             plans,
             pipeline_name=execution_name,
             child_pipeline_name=child_execution_name,
+            benchflow_image=benchflow_image,
         )
 
     def get(self, namespace: str, name: str) -> dict[str, Any] | None:

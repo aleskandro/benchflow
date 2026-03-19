@@ -122,11 +122,13 @@ def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
         manifest = render_execution_manifest(
             plans[0],
             execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         )
     else:
         manifest = render_matrix_execution_manifest(
             plans,
             child_execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         )
     print(dump_yaml(manifest))
     return 0
@@ -164,12 +166,14 @@ def _render_manifest_yaml(
         manifest = render_execution_manifest(
             plan,
             execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         )
         namespace = plan.deployment.namespace
     else:
         manifest = render_matrix_execution_manifest(
             plans,
             child_execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         )
         namespace = plan.deployment.namespace
     manifest_yaml = dump_yaml(manifest)
@@ -183,11 +187,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         Path(args.output).resolve().write_text(manifest_yaml, encoding="utf-8")
 
     name = submit_execution_manifest(
-        render_execution_manifest(plan_or_plans, execution_name=args.pipeline_name)
+        render_execution_manifest(
+            plan_or_plans,
+            execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
+        )
         if hasattr(plan_or_plans, "execution")
         else render_matrix_execution_manifest(
             plan_or_plans,
             child_execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
         ),
         namespace,
     )
@@ -212,7 +221,11 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         Path(args.output).resolve().write_text(manifest_yaml, encoding="utf-8")
 
     name = submit_execution_manifest(
-        render_execution_manifest(plan_or_plans, execution_name=args.pipeline_name),
+        render_execution_manifest(
+            plan_or_plans,
+            execution_name=args.pipeline_name,
+            benchflow_image=args.benchflow_image,
+        ),
         namespace,
     )
     print(name)
@@ -326,6 +339,10 @@ def experiment_resolve(**kwargs: object) -> int:
     show_default=True,
     help="Pipeline name to reference in the rendered PipelineRun.",
 )
+@click.option(
+    "--benchflow-image",
+    help="BenchFlow control image to use for all Pipeline tasks.",
+)
 def experiment_render_pipelinerun(**kwargs: object) -> int:
     return invoke_handler(cmd_render_pipelinerun, **kwargs)
 
@@ -363,6 +380,10 @@ def experiment_render_deployment(**kwargs: object) -> int:
     help="Pipeline name to reference when rendering the PipelineRun.",
 )
 @click.option(
+    "--benchflow-image",
+    help="BenchFlow control image to use for all Pipeline tasks.",
+)
+@click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
     help="Write the rendered PipelineRun manifest to this file before submitting.",
@@ -387,6 +408,10 @@ def experiment_run(**kwargs: object) -> int:
     default="benchflow-e2e",
     show_default=True,
     help="Pipeline name to reference when rendering the cleanup PipelineRun.",
+)
+@click.option(
+    "--benchflow-image",
+    help="BenchFlow control image to use for all Pipeline tasks.",
 )
 @click.option(
     "--output",

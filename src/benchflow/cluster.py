@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import json
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +52,27 @@ def require_any_command(*names: str) -> str:
             return name
     joined = ", ".join(names)
     raise CommandError(f"none of the required commands are available: {joined}")
+
+
+@contextmanager
+def use_kubeconfig(kubeconfig: str | Path | None):
+    if not kubeconfig:
+        yield
+        return
+
+    kubeconfig_path = Path(kubeconfig).expanduser()
+    if not kubeconfig_path.exists():
+        raise CommandError(f"target kubeconfig not found: {kubeconfig_path}")
+    kubeconfig_path = kubeconfig_path.resolve()
+    previous = os.environ.get("KUBECONFIG")
+    os.environ["KUBECONFIG"] = str(kubeconfig_path)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("KUBECONFIG", None)
+        else:
+            os.environ["KUBECONFIG"] = previous
 
 
 def run_command(

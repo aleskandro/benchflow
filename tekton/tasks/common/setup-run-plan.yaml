@@ -22,9 +22,15 @@ spec:
   workspaces:
     - name: state-storage
       description: Workspace where setup-state.json will be written
+    - name: target-kubeconfig
+      description: Optional kubeconfig for remote target-cluster operations
+      optional: true
   steps:
     - name: setup
       image: $(params.IMAGE)
+      env:
+        - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
+          value: $(workspaces.target-kubeconfig.path)
       command:
         - bflow
       args:

@@ -127,16 +127,24 @@ class MlflowSpec:
 @dataclass(slots=True)
 class ExecutionSpec:
     backend: str = "tekton"
+    timeout: str = "1h"
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "ExecutionSpec":
         raw = raw or {}
-        backend = str(raw.get("backend", "tekton") or "tekton").strip().lower()
-        if backend != "tekton":
-            raise ValidationError(
-                f"unsupported execution backend: {backend!r}; expected tekton"
-            )
-        return cls(backend=backend)
+        timeout = str(raw.get("timeout", "1h") or "1h").strip()
+        if not timeout:
+            raise ValidationError("execution.timeout must not be empty")
+        return cls(timeout=timeout)
+
+
+@dataclass(slots=True)
+class ClusterTargetSpec:
+    kubeconfig: str = ""
+    kubeconfig_secret: str = ""
+
+    def enabled(self) -> bool:
+        return bool(self.kubeconfig or self.kubeconfig_secret)
 
 
 @dataclass(slots=True)
@@ -188,6 +196,7 @@ class ExperimentSpec:
     stages: StageSpec = field(default_factory=StageSpec)
     mlflow: MlflowSpec = field(default_factory=MlflowSpec)
     execution: ExecutionSpec = field(default_factory=ExecutionSpec)
+    target_cluster: ClusterTargetSpec = field(default_factory=ClusterTargetSpec)
     overrides: OverrideSpec = field(default_factory=OverrideSpec)
 
 
@@ -316,6 +325,7 @@ class ResolvedRunPlan:
     metadata: Metadata
     profiles: ProfileRefs
     execution: ExecutionSpec
+    target_cluster: ClusterTargetSpec
     model: ModelSpec
     deployment: ResolvedDeployment
     benchmark: BenchmarkProfileSpec

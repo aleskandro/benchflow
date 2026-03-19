@@ -4,6 +4,7 @@ from itertools import product
 
 from .loaders import ProfileCatalog
 from .models import (
+    ClusterTargetSpec,
     ExecutionSpec,
     Experiment,
     ExperimentSpec,
@@ -177,7 +178,13 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                         experiment=experiment.spec.mlflow.experiment,
                         tags=dict(experiment.spec.mlflow.tags),
                     ),
-                    execution=ExecutionSpec(backend=experiment.spec.execution.backend),
+                    execution=ExecutionSpec(
+                        timeout=experiment.spec.execution.timeout,
+                    ),
+                    target_cluster=ClusterTargetSpec(
+                        kubeconfig=experiment.spec.target_cluster.kubeconfig,
+                        kubeconfig_secret=experiment.spec.target_cluster.kubeconfig_secret,
+                    ),
                     overrides=OverrideSpec(
                         images=OverrideImagesSpec(
                             runtime=runtime_image,
