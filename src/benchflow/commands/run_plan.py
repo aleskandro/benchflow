@@ -30,11 +30,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_render_workflow(args: argparse.Namespace) -> int:
+def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
     plan = _load_run_plan(args)
     manifest = render_execution_manifest(
         plan,
-        execution_name=args.workflow_name,
+        execution_name=args.pipeline_name,
     )
     print(dump_yaml(manifest))
     return 0
@@ -45,7 +45,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     manifest_yaml = dump_yaml(
         render_execution_manifest(
             plan,
-            execution_name=args.workflow_name,
+            execution_name=args.pipeline_name,
         )
     )
 
@@ -55,7 +55,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     name = submit_execution_manifest(
         render_execution_manifest(
             plan,
-            execution_name=args.workflow_name,
+            execution_name=args.pipeline_name,
         ),
         plan.deployment.namespace,
     )
@@ -84,7 +84,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     manifest_yaml = dump_yaml(
         render_execution_manifest(
             plan,
-            execution_name=args.workflow_name,
+            execution_name=args.pipeline_name,
         )
     )
 
@@ -94,7 +94,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     name = submit_execution_manifest(
         render_execution_manifest(
             plan,
-            execution_name=args.workflow_name,
+            execution_name=args.pipeline_name,
         ),
         plan.deployment.namespace,
     )
@@ -148,19 +148,19 @@ def run_plan_validate(**kwargs: object) -> int:
 
 
 @run_plan_group.command(
-    "render-workflow",
-    help="Render the execution manifest for a resolved RunPlan.",
-    short_help="Render an execution from a RunPlan",
+    "render-pipelinerun",
+    help="Render the PipelineRun manifest for a resolved RunPlan.",
+    short_help="Render a PipelineRun from a RunPlan",
 )
 @run_plan_input_options
 @click.option(
-    "--workflow-name",
+    "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to reference in the rendered manifest.",
+    help="Pipeline name to reference in the rendered PipelineRun.",
 )
-def run_plan_render_workflow(**kwargs: object) -> int:
-    return invoke_handler(cmd_render_workflow, **kwargs)
+def run_plan_render_pipelinerun(**kwargs: object) -> int:
+    return invoke_handler(cmd_render_pipelinerun, **kwargs)
 
 
 @run_plan_group.command(
@@ -170,15 +170,15 @@ def run_plan_render_workflow(**kwargs: object) -> int:
 )
 @run_plan_input_options
 @click.option(
-    "--workflow-name",
+    "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to reference when rendering the manifest.",
+    help="Pipeline name to reference when rendering the PipelineRun.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered execution manifest to this file before submitting.",
+    help="Write the rendered PipelineRun manifest to this file before submitting.",
 )
 @click.option(
     "--follow",
@@ -196,15 +196,15 @@ def run_plan_run(**kwargs: object) -> int:
 )
 @run_plan_input_options
 @click.option(
-    "--workflow-name",
+    "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to reference when rendering the cleanup manifest.",
+    help="Pipeline name to reference when rendering the cleanup PipelineRun.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered cleanup execution manifest to this file before submitting.",
+    help="Write the rendered cleanup PipelineRun manifest to this file before submitting.",
 )
 @click.option(
     "--follow/--no-follow",

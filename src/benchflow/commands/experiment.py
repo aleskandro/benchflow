@@ -116,17 +116,17 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_render_workflow(args: argparse.Namespace) -> int:
+def cmd_render_pipelinerun(args: argparse.Namespace) -> int:
     plans = load_plans(args)
     if len(plans) == 1:
         manifest = render_execution_manifest(
             plans[0],
-            execution_name=args.workflow_name,
+            execution_name=args.pipeline_name,
         )
     else:
         manifest = render_matrix_execution_manifest(
             plans,
-            child_execution_name=args.workflow_name,
+            child_execution_name=args.pipeline_name,
         )
     print(dump_yaml(manifest))
     return 0
@@ -163,13 +163,13 @@ def _render_manifest_yaml(
     if len(plans) == 1:
         manifest = render_execution_manifest(
             plan,
-            execution_name=args.workflow_name,
+            execution_name=args.pipeline_name,
         )
         namespace = plan.deployment.namespace
     else:
         manifest = render_matrix_execution_manifest(
             plans,
-            child_execution_name=args.workflow_name,
+            child_execution_name=args.pipeline_name,
         )
         namespace = plan.deployment.namespace
     manifest_yaml = dump_yaml(manifest)
@@ -183,11 +183,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         Path(args.output).resolve().write_text(manifest_yaml, encoding="utf-8")
 
     name = submit_execution_manifest(
-        render_execution_manifest(plan_or_plans, execution_name=args.workflow_name)
+        render_execution_manifest(plan_or_plans, execution_name=args.pipeline_name)
         if hasattr(plan_or_plans, "execution")
         else render_matrix_execution_manifest(
             plan_or_plans,
-            child_execution_name=args.workflow_name,
+            child_execution_name=args.pipeline_name,
         ),
         namespace,
     )
@@ -212,7 +212,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         Path(args.output).resolve().write_text(manifest_yaml, encoding="utf-8")
 
     name = submit_execution_manifest(
-        render_execution_manifest(plan_or_plans, execution_name=args.workflow_name),
+        render_execution_manifest(plan_or_plans, execution_name=args.pipeline_name),
         namespace,
     )
     print(name)
@@ -312,22 +312,22 @@ def experiment_resolve(**kwargs: object) -> int:
 
 
 @experiment_group.command(
-    "render-workflow",
+    "render-pipelinerun",
     help=(
-        "Render the execution manifest that would be submitted for an experiment. "
-        "Matrix experiments render the supervisor execution."
+        "Render the PipelineRun manifest that would be submitted for an experiment. "
+        "Matrix experiments render the supervisor PipelineRun."
     ),
-    short_help="Render the execution manifest",
+    short_help="Render a PipelineRun manifest",
 )
 @experiment_input_options
 @click.option(
-    "--workflow-name",
+    "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to reference in the rendered manifest.",
+    help="Pipeline name to reference in the rendered PipelineRun.",
 )
-def experiment_render_workflow(**kwargs: object) -> int:
-    return invoke_handler(cmd_render_workflow, **kwargs)
+def experiment_render_pipelinerun(**kwargs: object) -> int:
+    return invoke_handler(cmd_render_pipelinerun, **kwargs)
 
 
 @experiment_group.command(
@@ -357,15 +357,15 @@ def experiment_render_deployment(**kwargs: object) -> int:
 )
 @experiment_input_options
 @click.option(
-    "--workflow-name",
+    "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to reference when rendering the manifest.",
+    help="Pipeline name to reference when rendering the PipelineRun.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered execution manifest to this file before submitting.",
+    help="Write the rendered PipelineRun manifest to this file before submitting.",
 )
 @click.option(
     "--follow",
@@ -383,15 +383,15 @@ def experiment_run(**kwargs: object) -> int:
 )
 @experiment_input_options
 @click.option(
-    "--workflow-name",
+    "--pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to reference when rendering the cleanup manifest.",
+    help="Pipeline name to reference when rendering the cleanup PipelineRun.",
 )
 @click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Write the rendered cleanup execution manifest to this file before submitting.",
+    help="Write the rendered cleanup PipelineRun manifest to this file before submitting.",
 )
 @click.option(
     "--follow/--no-follow",

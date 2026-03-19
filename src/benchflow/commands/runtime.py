@@ -125,7 +125,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
     if not args.all_logs and not args.step:
         steps = list_execution_steps(namespace, args.execution_name)
         if not steps:
-            detail("No selectable workflow steps were found yet")
+            detail("No selectable pipeline tasks were found yet")
             return 0
         for step_name in steps:
             print(step_name)
@@ -553,7 +553,7 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
         raise ValidationError("--run-plans-json must contain a non-empty JSON array")
 
     plans = [load_run_plan_data(item) for item in raw_run_plans]
-    run_matrix_supervisor(plans, child_execution_name=args.child_workflow_name)
+    run_matrix_supervisor(plans, child_execution_name=args.child_pipeline_name)
     print("completed")
     return 0
 
@@ -562,7 +562,7 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     "bootstrap",
     help=(
         "Bootstrap BenchFlow into a namespace and install NFD, the NVIDIA GPU "
-        "Operator, Argo Workflows, Grafana, RBAC, and PVCs."
+        "Operator, OpenShift Pipelines, Grafana, RBAC, and PVCs."
     ),
     short_help="Bootstrap BenchFlow and cluster dependencies",
 )
@@ -606,7 +606,7 @@ def bootstrap_command(**kwargs: object) -> int:
 
 @click.group(
     "repo",
-    help="Repository helpers used by deployment workflows.",
+    help="Repository helpers used by deployment pipelines.",
     short_help="Repository utilities",
 )
 def repo_group() -> None:
@@ -1356,10 +1356,10 @@ def task_assert_status_command(**kwargs: object) -> int:
     help="JSON array of resolved RunPlan objects.",
 )
 @click.option(
-    "--child-workflow-name",
+    "--child-pipeline-name",
     default="benchflow-e2e",
     show_default=True,
-    help="Execution definition name to use for the child executions.",
+    help="Pipeline name to use for the child executions.",
 )
 def task_run_experiment_matrix_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_run_experiment_matrix, **kwargs)
@@ -1367,7 +1367,7 @@ def task_run_experiment_matrix_command(**kwargs: object) -> int:
 
 @click.command(
     "watch",
-    help="Watch workflow and step status progress until a BenchFlow execution finishes.",
+    help="Watch PipelineRun and task status progress until a BenchFlow execution finishes.",
     short_help="Watch execution progress",
 )
 @click.argument("execution_name")
@@ -1382,7 +1382,7 @@ def watch_command(**kwargs: object) -> int:
 @click.command(
     "logs",
     help=(
-        "List selectable workflow steps or stream logs for one step or the full "
+        "List selectable pipeline tasks or stream logs for one task or the full "
         "execution."
     ),
     short_help="Inspect execution logs",
@@ -1394,7 +1394,7 @@ def watch_command(**kwargs: object) -> int:
 )
 @click.option(
     "--step",
-    help="Logical workflow step name to stream logs from.",
+    help="Logical pipeline task name to stream logs from.",
 )
 @click.option(
     "--all",
@@ -1405,7 +1405,7 @@ def watch_command(**kwargs: object) -> int:
 @click.option(
     "--all-containers",
     is_flag=True,
-    help="Include Argo init and wait container logs when streaming one workflow step.",
+    help="Include non-main task containers when streaming one pipeline task.",
 )
 def logs_command(**kwargs: object) -> int:
     return invoke_handler(cmd_logs, **kwargs)

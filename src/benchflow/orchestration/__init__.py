@@ -1,4 +1,3 @@
-from .argo import ArgoOrchestrator
 from .base import ExecutionOrchestrator
 from .service import (
     DEFAULT_EXECUTION_NAME,
@@ -19,9 +18,9 @@ from .service import (
     submit_execution_manifest,
     summarize_execution,
 )
+from .tekton import TektonOrchestrator
 
 __all__ = [
-    "ArgoOrchestrator",
     "DEFAULT_EXECUTION_NAME",
     "DEFAULT_MATRIX_EXECUTION_NAME",
     "cancel_execution",
@@ -40,4 +39,5 @@ __all__ = [
     "stream_execution_logs",
     "submit_execution_manifest",
     "summarize_execution",
+    "TektonOrchestrator",
 ]

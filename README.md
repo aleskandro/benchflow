@@ -4,7 +4,7 @@
 
 *Repeatable LLM inference benchmarks for OpenShift.*
 
-BenchFlow is a packaged control plane for running benchmark scenarios, not a loose collection of scripts. It resolves an experiment into one immutable `RunPlan`, executes it through Argo Workflows, captures metrics and artifacts, and pushes the result to MLflow. It is powered by [vllm-project/guidellm](https://github.com/vllm-project/guidellm).
+BenchFlow is a packaged control plane for running benchmark scenarios, not a loose collection of scripts. It resolves an experiment into one immutable `RunPlan`, executes it through Tekton `PipelineRun`s, captures metrics and artifacts, and pushes the result to MLflow. It is powered by [vllm-project/guidellm](https://github.com/vllm-project/guidellm).
 
 > [!NOTE]
 > This project is experimental and for learning purposes mainly, but the implemented execution paths today are `llm-d` and `RHOAI`. Expect some parts to still be highly coupled.
@@ -28,7 +28,7 @@ Then bootstrap the cluster:
 bflow bootstrap
 ```
 
-`bflow bootstrap` installs the shared baseline BenchFlow owns: NFD, the NVIDIA GPU Operator, Argo Workflows, Grafana, RBAC, PVCs, and the repo-root Argo reusable templates and workflow templates. BenchFlow assumes an OpenShift cluster with cluster monitoring enabled, a reachable MLflow deployment backed by S3, and a usable storage class.
+`bflow bootstrap` installs the shared baseline BenchFlow owns: NFD, the NVIDIA GPU Operator, OpenShift Pipelines, Grafana, RBAC, PVCs, and the repo-root Tekton tasks and pipelines. BenchFlow assumes an OpenShift cluster with cluster monitoring enabled, a reachable MLflow deployment backed by S3, and a usable storage class.
 
 The narrow path is the shipped smoke experiment:
 
@@ -44,4 +44,4 @@ bflow watch <execution-name> --namespace benchflow
 
 BenchFlow also supports matrix experiments by turning one or more profile fields into lists; the cluster then runs the cartesian product sequentially in the cluster.
 
-For the full command surface, RunPlan workflow, matrix execution, and lower-level runtime commands, see [docs/ADVANCED.md](docs/ADVANCED.md).
+For the full command surface, RunPlan PipelineRun flow, matrix execution, and lower-level runtime commands, see [docs/ADVANCED.md](docs/ADVANCED.md).

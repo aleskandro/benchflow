@@ -98,7 +98,7 @@ def collect_artifacts(
                 "-n",
                 namespace,
                 "-l",
-                f"workflows.argoproj.io/workflow={execution_name}",
+                f"tekton.dev/pipelineRun={execution_name}",
                 "-o",
                 "json",
             ]

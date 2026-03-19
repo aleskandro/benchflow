@@ -11,14 +11,14 @@ from ..loaders import load_run_plan_data, load_run_plan_file
 from ..setup import load_setup_state
 from ..toolbox import setup_platform, teardown_platform
 from ..ui import detail, step, success, warning
-from .argo import ArgoOrchestrator
+from .tekton import TektonOrchestrator
 from .base import ExecutionOrchestrator
 
 DEFAULT_EXECUTION_NAME = "benchflow-e2e"
 DEFAULT_MATRIX_EXECUTION_NAME = "benchflow-matrix"
 
 _BACKENDS: dict[str, ExecutionOrchestrator] = {
-    "argo": ArgoOrchestrator(),
+    "tekton": TektonOrchestrator(),
 }
 
 
@@ -46,7 +46,7 @@ def require_platform(plan: ResolvedRunPlan, platform: str) -> None:
 
 
 def normalize_execution_backend(name: str | None) -> str:
-    backend = str(name or "argo").strip().lower()
+    backend = str(name or "tekton").strip().lower()
     if backend not in _BACKENDS:
         choices = ", ".join(sorted(_BACKENDS))
         raise ValidationError(
@@ -103,7 +103,7 @@ def render_matrix_execution_manifest(
 
 
 def _execution_summaries_for_backend(namespace: str) -> list[dict[str, Any]]:
-    backend = get_execution_backend("argo")
+    backend = get_execution_backend("tekton")
     try:
         items = backend.list(
             namespace, label_selector="app.kubernetes.io/name=benchflow"
@@ -126,7 +126,7 @@ def list_benchflow_executions(
 
 
 def _detect_execution_backend(namespace: str, name: str) -> str:
-    backend_name = "argo"
+    backend_name = "tekton"
     if get_execution_backend(backend_name).get(namespace, name) is None:
         raise CommandError(
             f"no BenchFlow execution named {name!r} found in {namespace}"
@@ -144,7 +144,7 @@ def get_execution(
     )
     payload = get_execution_backend(backend_name).get(namespace, name)
     if payload is None:
-        raise CommandError(f"Workflow {name} in namespace {namespace} was not found")
+        raise CommandError(f"PipelineRun {name} in namespace {namespace} was not found")
     return payload
 
 
@@ -158,7 +158,7 @@ def summarize_execution(
     )
     payload = get_execution_backend(backend_name).get(namespace, name)
     if payload is None:
-        raise CommandError(f"Workflow {name} in namespace {namespace} was not found")
+        raise CommandError(f"PipelineRun {name} in namespace {namespace} was not found")
     return get_execution_backend(backend_name).summarize(payload).to_dict()
 
 
