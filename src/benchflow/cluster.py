@@ -60,7 +60,10 @@ def use_kubeconfig(kubeconfig: str | Path | None):
         yield
         return
 
-    kubeconfig_path = Path(kubeconfig).expanduser().resolve()
+    kubeconfig_path = Path(kubeconfig).expanduser()
+    if not kubeconfig_path.exists():
+        raise CommandError(f"target kubeconfig not found: {kubeconfig_path}")
+    kubeconfig_path = kubeconfig_path.resolve()
     previous = os.environ.get("KUBECONFIG")
     os.environ["KUBECONFIG"] = str(kubeconfig_path)
     try:

@@ -31,6 +31,8 @@ spec:
       env:
         - name: BENCHFLOW_REMOTE_IMAGE
           value: $(params.IMAGE)
+        - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
+          value: $(workspaces.target-kubeconfig.path)
       command:
         - bflow
       args:

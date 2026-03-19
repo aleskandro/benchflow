@@ -28,6 +28,9 @@ spec:
   steps:
     - name: setup
       image: $(params.IMAGE)
+      env:
+        - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
+          value: $(workspaces.target-kubeconfig.path)
       command:
         - bflow
       args:

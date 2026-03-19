@@ -59,14 +59,13 @@ def render_pipelinerun(
             "persistentVolumeClaim": {"claimName": "benchmark-results"},
         },
         {"name": "source", "emptyDir": {}},
+        {"name": "target-kubeconfig", "emptyDir": {}},
     ]
     if plan.target_cluster.kubeconfig_secret:
-        workspaces.append(
-            {
-                "name": "target-kubeconfig",
-                "secret": {"secretName": plan.target_cluster.kubeconfig_secret},
-            }
-        )
+        workspaces[-1] = {
+            "name": "target-kubeconfig",
+            "secret": {"secretName": plan.target_cluster.kubeconfig_secret},
+        }
     return {
         "apiVersion": "tekton.dev/v1",
         "kind": "PipelineRun",
