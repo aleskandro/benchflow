@@ -18,6 +18,9 @@ spec:
   steps:
     - name: run
       image: $(params.IMAGE)
+      env:
+        - name: BENCHFLOW_IMAGE
+          value: $(params.IMAGE)
       command:
         - bflow
       args:

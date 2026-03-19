@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 from pathlib import Path
 
 import click
@@ -650,7 +651,11 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
         raise ValidationError("--run-plans-json must contain a non-empty JSON array")
 
     plans = [load_run_plan_data(item) for item in raw_run_plans]
-    run_matrix_supervisor(plans, child_execution_name=args.child_pipeline_name)
+    run_matrix_supervisor(
+        plans,
+        child_execution_name=args.child_pipeline_name,
+        benchflow_image=os.environ.get("BENCHFLOW_IMAGE"),
+    )
     print("completed")
     return 0
 

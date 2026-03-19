@@ -66,6 +66,7 @@ def render_execution_manifest(
     setup_mode: str = "auto",
     teardown: bool = True,
     backend: str | None = None,
+    benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     backend_name = normalize_execution_backend(backend or plan.execution.backend)
     plan.execution.backend = backend_name
@@ -74,6 +75,7 @@ def render_execution_manifest(
         execution_name=execution_name,
         setup_mode=setup_mode,
         teardown=teardown,
+        benchflow_image=benchflow_image,
     )
 
 
@@ -83,6 +85,7 @@ def render_matrix_execution_manifest(
     execution_name: str = DEFAULT_MATRIX_EXECUTION_NAME,
     child_execution_name: str = DEFAULT_EXECUTION_NAME,
     backend: str | None = None,
+    benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     if not plans:
         raise ValidationError("matrix submission requires at least one RunPlan")
@@ -99,6 +102,7 @@ def render_matrix_execution_manifest(
         plans,
         execution_name=execution_name,
         child_execution_name=child_execution_name,
+        benchflow_image=benchflow_image,
     )
 
 
@@ -239,6 +243,7 @@ def run_matrix_supervisor(
     plans: list[ResolvedRunPlan],
     *,
     child_execution_name: str,
+    benchflow_image: str | None = None,
 ) -> list[str]:
     if not plans:
         raise ValidationError("matrix execution requires at least one RunPlan")
@@ -298,6 +303,7 @@ def run_matrix_supervisor(
                 execution_name=child_execution_name,
                 setup_mode="skip" if setup_hoisted else "auto",
                 teardown=False if setup_hoisted else True,
+                benchflow_image=benchflow_image,
             )
             name = submit_execution_manifest(manifest, plan.deployment.namespace)
             detail(f"Created execution {name} in namespace {plan.deployment.namespace}")

@@ -45,6 +45,7 @@ def render_pipelinerun(
     pipeline_name: str,
     setup_mode: str,
     teardown: bool,
+    benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     if plan.target_cluster.kubeconfig and not plan.target_cluster.kubeconfig_secret:
         raise ValidationError(
@@ -83,6 +84,11 @@ def render_pipelinerun(
                     "name": "MODELS_STORAGE_PVC",
                     "value": plan.deployment.model_storage.pvc_name,
                 },
+                *(
+                    [{"name": "BENCHFLOW_IMAGE", "value": benchflow_image}]
+                    if benchflow_image
+                    else []
+                ),
                 {"name": "SETUP_MODE", "value": setup_mode},
                 {"name": "TEARDOWN", "value": str(teardown).lower()},
             ],
@@ -96,6 +102,7 @@ def render_matrix_pipelinerun(
     *,
     pipeline_name: str,
     child_pipeline_name: str,
+    benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     if not plans:
         raise ValidationError("matrix submission requires at least one RunPlan")
@@ -143,6 +150,11 @@ def render_matrix_pipelinerun(
             "ttlSecondsAfterFinished": next(iter(ttl_values)),
             "params": [
                 {"name": "RUN_PLANS", "value": run_plans_json},
+                *(
+                    [{"name": "BENCHFLOW_IMAGE", "value": benchflow_image}]
+                    if benchflow_image
+                    else []
+                ),
                 {"name": "CHILD_PIPELINE_NAME", "value": child_pipeline_name},
             ],
         },
@@ -449,12 +461,14 @@ class TektonOrchestrator:
         execution_name: str,
         setup_mode: str,
         teardown: bool,
+        benchflow_image: str | None = None,
     ) -> dict[str, Any]:
         return render_pipelinerun(
             plan,
             pipeline_name=execution_name,
             setup_mode=setup_mode,
             teardown=teardown,
+            benchflow_image=benchflow_image,
         )
 
     def render_matrix(
@@ -463,11 +477,13 @@ class TektonOrchestrator:
         *,
         execution_name: str,
         child_execution_name: str,
+        benchflow_image: str | None = None,
     ) -> dict[str, Any]:
         return render_matrix_pipelinerun(
             plans,
             pipeline_name=execution_name,
             child_pipeline_name=child_execution_name,
+            benchflow_image=benchflow_image,
         )
 
     def get(self, namespace: str, name: str) -> dict[str, Any] | None:
