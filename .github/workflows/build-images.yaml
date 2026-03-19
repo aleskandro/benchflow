@@ -4,27 +4,103 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "*"
     paths:
       - ".github/workflows/build-images.yaml"
       - "build/**"
       - "src/**"
       - "pyproject.toml"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/build-images.yaml"
-      - "build/**"
-      - "src/**"
-      - "pyproject.toml"
-  workflow_dispatch:
+  issue_comment:
+    types:
+      - created
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
+  resolve-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
+      checkout_repository: ${{ steps.resolve.outputs.checkout_repository }}
+      build_channel: ${{ steps.resolve.outputs.build_channel }}
+      tag_prefix: ${{ steps.resolve.outputs.tag_prefix }}
+      main_cleanup: ${{ steps.resolve.outputs.main_cleanup }}
+    steps:
+      - name: Checkout repository metadata
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve build context
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          SHOULD_BUILD=false
+          CHECKOUT_REPOSITORY="${GITHUB_REPOSITORY}"
+          CHECKOUT_REF="${GITHUB_SHA}"
+          BUILD_CHANNEL=""
+          TAG_PREFIX=""
+          MAIN_CLEANUP=false
+
+          if [[ "${GITHUB_EVENT_NAME}" == "issue_comment" ]]; then
+            BODY="$(jq -r '.comment.body // ""' "${GITHUB_EVENT_PATH}")"
+            ASSOCIATION="$(jq -r '.comment.author_association // ""' "${GITHUB_EVENT_PATH}")"
+            IS_PR="$(jq -r 'has("issue") and (.issue | has("pull_request"))' "${GITHUB_EVENT_PATH}")"
+            PR_NUMBER="$(jq -r '.issue.number // ""' "${GITHUB_EVENT_PATH}")"
+
+            if [[ "${IS_PR}" == "true" ]] \
+              && [[ "${BODY}" =~ ^/build([[:space:]]|$) ]] \
+              && [[ "${ASSOCIATION}" =~ ^(OWNER|MEMBER|COLLABORATOR)$ ]]; then
+              PR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+              PR_STATE="$(jq -r '.state' <<< "${PR_JSON}")"
+
+              if [[ "${PR_STATE}" == "open" ]]; then
+                SHOULD_BUILD=true
+                CHECKOUT_REPOSITORY="$(jq -r '.head.repo.full_name' <<< "${PR_JSON}")"
+                CHECKOUT_REF="$(jq -r '.head.sha' <<< "${PR_JSON}")"
+                BUILD_CHANNEL="pr"
+                TAG_PREFIX="pr-${PR_NUMBER}"
+              fi
+            fi
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            SHOULD_BUILD=true
+            CHECKOUT_REF="${GITHUB_SHA}"
+            BUILD_CHANNEL="main"
+            MAIN_CLEANUP=true
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            git fetch origin main --depth=1
+            if git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+              SHOULD_BUILD=true
+              CHECKOUT_REF="${GITHUB_SHA}"
+              BUILD_CHANNEL="release"
+              TAG_PREFIX="${GITHUB_REF_NAME}"
+            fi
+          fi
+
+          {
+            echo "should_build=${SHOULD_BUILD}"
+            echo "checkout_ref=${CHECKOUT_REF}"
+            echo "checkout_repository=${CHECKOUT_REPOSITORY}"
+            echo "build_channel=${BUILD_CHANNEL}"
+            echo "tag_prefix=${TAG_PREFIX}"
+            echo "main_cleanup=${MAIN_CLEANUP}"
+          } >> "${GITHUB_OUTPUT}"
+
   build-images:
+    needs: resolve-build
+    if: needs.resolve-build.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,6 +108,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve-build.outputs.checkout_repository }}
+          ref: ${{ needs.resolve-build.outputs.checkout_ref }}
+          fetch-depth: 1
 
       - name: Install podman
         run: |
@@ -40,36 +120,113 @@ jobs:
 
       - name: Set image tags
         id: tags
+        env:
+          BUILD_CHANNEL: ${{ needs.resolve-build.outputs.build_channel }}
+          TAG_PREFIX: ${{ needs.resolve-build.outputs.tag_prefix }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_TAG="pr-${{ github.event.pull_request.number }}"
-          else
-            BASE_TAG="latest"
-          fi
+          set -euo pipefail
 
-          BENCHFLOW_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/benchflow:${BASE_TAG}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          TAGS=()
 
-          echo "base_tag=${BASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "benchflow_image=${BENCHFLOW_IMAGE}" >> "$GITHUB_OUTPUT"
+          case "${BUILD_CHANNEL}" in
+            main)
+              TAGS+=("latest")
+              TAGS+=("main-${SHORT_SHA}")
+              ;;
+            pr|release)
+              TAGS+=("${TAG_PREFIX}")
+              ;;
+            *)
+              echo "Unsupported build channel: ${BUILD_CHANNEL}" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "primary_tag=${TAGS[0]}"
+            echo "tags<<EOF"
+            printf '%s\n' "${TAGS[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Build BenchFlow image
         run: |
+          set -euo pipefail
+
+          LOCAL_IMAGE="local/benchflow:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           podman build \
             -f build/Containerfile \
-            -t ${{ steps.tags.outputs.benchflow_image }} \
+            -t "${LOCAL_IMAGE}" \
             .
 
-      - name: Push BenchFlow image
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+          echo "LOCAL_IMAGE=${LOCAL_IMAGE}" >> "${GITHUB_ENV}"
+
+      - name: Push BenchFlow images
         run: |
-          podman push ${{ steps.tags.outputs.benchflow_image }}
+          set -euo pipefail
+
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            IMAGE_URL="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/benchflow:${tag}"
+            podman tag "${LOCAL_IMAGE}" "${IMAGE_URL}"
+            podman push "${IMAGE_URL}"
+          done <<< "${{ steps.tags.outputs.tags }}"
 
       - name: Image summary
         run: |
           echo "## Built Images" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ steps.tags.outputs.benchflow_image }}\`" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/benchflow:${tag}\`" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "${{ steps.tags.outputs.tags }}"
+
+  cleanup-main-images:
+    needs:
+      - resolve-build
+      - build-images
+    if: needs.resolve-build.outputs.main_cleanup == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Prune old main image versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          OWNER_TYPE="$(gh api "/users/${GITHUB_REPOSITORY_OWNER}" --jq '.type')"
+          if [[ "${OWNER_TYPE}" == "Organization" ]]; then
+            API_SCOPE="orgs"
+          else
+            API_SCOPE="users"
+          fi
+
+          PACKAGE_BASE="/${API_SCOPE}/${GITHUB_REPOSITORY_OWNER}/packages/container/benchflow/versions"
+          gh api --paginate "${PACKAGE_BASE}?per_page=100" | jq -s 'add' > versions.json
+
+          mapfile -t DELETE_IDS < <(
+            jq -r '
+              map(select(any(.metadata.container.tags[]?; test("^main-[0-9a-f]{7}$"))))
+              | sort_by(.created_at)
+              | reverse
+              | .[3:]
+              | .[].id
+            ' versions.json
+          )
+
+          if [[ "${#DELETE_IDS[@]}" -eq 0 ]]; then
+            echo "No old main BenchFlow image versions to prune"
+            exit 0
+          fi
+
+          for version_id in "${DELETE_IDS[@]}"; do
+            echo "Deleting package version ${version_id} from benchflow"
+            gh api --method DELETE "${PACKAGE_BASE}/${version_id}"
+          done
