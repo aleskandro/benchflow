@@ -111,6 +111,10 @@ def render_matrix_pipelinerun(
     service_accounts = {plan.service_account for plan in plans}
     ttl_values = {plan.ttl_seconds_after_finished for plan in plans}
     backends = {plan.execution.backend for plan in plans}
+    kubeconfig_secrets = {plan.target_cluster.kubeconfig_secret for plan in plans}
+    inline_kubeconfigs = {
+        str(plan.target_cluster.kubeconfig or "").strip() for plan in plans
+    }
     if len(namespaces) != 1:
         raise ValidationError(
             "matrix submission requires all runs to target one namespace"
@@ -125,11 +129,29 @@ def render_matrix_pipelinerun(
         raise ValidationError(
             "Tekton matrix submission requires all child RunPlans to use the tekton backend"
         )
+    if len(kubeconfig_secrets) != 1:
+        raise ValidationError(
+            "matrix submission requires all runs to use the same target kubeconfig secret"
+        )
+    if inline_kubeconfigs - {""}:
+        raise ValidationError(
+            "Tekton matrix submission requires target_cluster.kubeconfig_secret for remote target clusters; "
+            "--target-kubeconfig only works with direct local BenchFlow commands"
+        )
 
     first_plan = plans[0]
     run_plans_json = json.dumps(
-        [plan.to_dict() for plan in plans], separators=(",", ":"), sort_keys=True
+        [json.loads(_serialized_run_plan(plan)) for plan in plans],
+        separators=(",", ":"),
+        sort_keys=True,
     )
+    workspaces: list[dict[str, Any]] = [{"name": "target-kubeconfig", "emptyDir": {}}]
+    kubeconfig_secret = next(iter(kubeconfig_secrets))
+    if kubeconfig_secret:
+        workspaces[0] = {
+            "name": "target-kubeconfig",
+            "secret": {"secretName": kubeconfig_secret},
+        }
 
     return {
         "apiVersion": "tekton.dev/v1",
@@ -157,6 +179,7 @@ def render_matrix_pipelinerun(
                 ),
                 {"name": "CHILD_PIPELINE_NAME", "value": child_pipeline_name},
             ],
+            "workspaces": workspaces,
         },
     }
 
