@@ -14,6 +14,11 @@ on:
   issue_comment:
     types:
       - created
+  pull_request_target:
+    types:
+      - closed
+    branches:
+      - main
 
 env:
   REGISTRY: ghcr.io
@@ -134,7 +139,10 @@ jobs:
               TAGS+=("latest")
               TAGS+=("main-${SHORT_SHA}")
               ;;
-            pr|release)
+            pr)
+              TAGS+=("${TAG_PREFIX}-${SHORT_SHA}")
+              ;;
+            release)
               TAGS+=("${TAG_PREFIX}")
               ;;
             *)
@@ -251,6 +259,76 @@ jobs:
 
           if [[ "${#DELETE_IDS[@]}" -eq 0 ]]; then
             echo "No old main BenchFlow image versions to prune"
+            exit 0
+          fi
+
+          for version_id in "${DELETE_IDS[@]}"; do
+            echo "Deleting package version ${version_id} from benchflow"
+            gh api --method DELETE "${PACKAGE_BASE}/${version_id}"
+          done
+
+  cleanup-pr-images:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - name: Prune closed PR image versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          OWNER_TYPE="$(gh api "/users/${GITHUB_REPOSITORY_OWNER}" --jq '.type')"
+          if [[ "${OWNER_TYPE}" == "Organization" ]]; then
+            API_SCOPE="orgs"
+          else
+            API_SCOPE="users"
+          fi
+
+          PACKAGE_NAME="${GITHUB_REPOSITORY#*/}/benchflow"
+          PACKAGE_NAME_ENCODED="${PACKAGE_NAME//\//%2F}"
+          PACKAGE_BASE="/${API_SCOPE}/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME_ENCODED}/versions"
+
+          if ! gh api "${PACKAGE_BASE}?per_page=1" >/dev/null 2>&1; then
+            PACKAGE_NAME="$(
+              gh api "/${API_SCOPE}/${GITHUB_REPOSITORY_OWNER}/packages?package_type=container&per_page=100" \
+                --jq '
+                  map(select(
+                    (.name == "benchflow")
+                    or (.name == "'"${GITHUB_REPOSITORY#*/}"'/benchflow")
+                    or (.name | endswith("/benchflow"))
+                  ))
+                  | sort_by(.updated_at)
+                  | reverse
+                  | .[0].name // ""
+                '
+            )"
+
+            if [[ -z "${PACKAGE_NAME}" ]]; then
+              echo "Could not resolve the GHCR package name for benchflow" >&2
+              exit 1
+            fi
+
+            PACKAGE_NAME_ENCODED="${PACKAGE_NAME//\//%2F}"
+            PACKAGE_BASE="/${API_SCOPE}/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME_ENCODED}/versions"
+          fi
+
+          echo "Pruning PR ${PR_NUMBER} images from package ${PACKAGE_NAME}"
+          gh api --paginate "${PACKAGE_BASE}?per_page=100" | jq -s 'add' > versions.json
+
+          mapfile -t DELETE_IDS < <(
+            jq -r --arg regex "^pr-${PR_NUMBER}-[0-9a-f]{7}$" '
+              map(select(any(.metadata.container.tags[]?; test($regex))))
+              | .[].id
+            ' versions.json
+          )
+
+          if [[ "${#DELETE_IDS[@]}" -eq 0 ]]; then
+            echo "No PR image versions to prune for PR ${PR_NUMBER}"
             exit 0
           fi
 
