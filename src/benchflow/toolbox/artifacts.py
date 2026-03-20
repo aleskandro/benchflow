@@ -67,10 +67,10 @@ def collect_plan_artifacts(
                     [
                         "--mlflow-run-id",
                         mlflow_run_id,
-                        "--artifact-path-prefix",
-                        "target",
                         "--cleanup-after-upload",
                         "--upload-direct-to-mlflow",
+                        "--exclude-name",
+                        "metadata.json",
                     ]
                     if direct_upload
                     else []

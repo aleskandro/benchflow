@@ -46,7 +46,7 @@ def collect_plan_metrics(
                         "--mlflow-run-id",
                         mlflow_run_id,
                         "--artifact-path-prefix",
-                        "target/metrics",
+                        "metrics",
                         "--cleanup-after-upload",
                         "--upload-direct-to-mlflow",
                     ]

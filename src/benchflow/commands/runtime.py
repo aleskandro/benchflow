@@ -607,6 +607,7 @@ def cmd_artifacts_collect(args: argparse.Namespace) -> int:
             artifacts_dir=artifact_dir,
             artifact_path_prefix=str(args.artifact_path_prefix or ""),
             cleanup_after_upload=bool(args.cleanup_after_upload),
+            exclude_names=set(getattr(args, "exclude_name", []) or []),
         )
     print(artifact_dir)
     return 0
@@ -1383,6 +1384,11 @@ def artifacts_group() -> None:
     "--upload-direct-to-mlflow",
     is_flag=True,
     help="Upload the collected artifacts directly to MLflow from this command.",
+)
+@click.option(
+    "--exclude-name",
+    multiple=True,
+    help="Artifact file or directory name to skip during direct MLflow upload.",
 )
 def artifacts_collect_command(**kwargs: object) -> int:
     return invoke_handler(cmd_artifacts_collect, **kwargs)

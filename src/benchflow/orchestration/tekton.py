@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,7 @@ _ANSI_GREEN = "\033[32m"
 _ANSI_RED = "\033[31m"
 _ANSI_CYAN = "\033[36m"
 _TARGET_KUBECONFIG_PATH = "/workspace/target-kubeconfig/kubeconfig"
+_DURATION_PART_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)(?P<unit>ms|h|m|s)")
 
 
 def _common_labels(plan: ResolvedRunPlan, *, backend: str) -> dict[str, str]:
@@ -37,6 +40,54 @@ def _serialized_run_plan(plan: ResolvedRunPlan) -> str:
         target_cluster["kubeconfig"] = _TARGET_KUBECONFIG_PATH
     payload["target_cluster"] = target_cluster
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _parse_duration_seconds(value: str) -> int:
+    cleaned = str(value).strip().lower()
+    if not cleaned:
+        raise ValidationError("execution timeout must not be empty")
+    position = 0
+    total_seconds = 0.0
+    for match in _DURATION_PART_RE.finditer(cleaned):
+        if match.start() != position:
+            raise ValidationError(f"invalid duration: {value!r}")
+        magnitude = float(match.group("value"))
+        unit = match.group("unit")
+        if unit == "h":
+            total_seconds += magnitude * 3600.0
+        elif unit == "m":
+            total_seconds += magnitude * 60.0
+        elif unit == "s":
+            total_seconds += magnitude
+        elif unit == "ms":
+            total_seconds += magnitude / 1000.0
+        position = match.end()
+    if position != len(cleaned):
+        raise ValidationError(f"invalid duration: {value!r}")
+    return max(1, math.ceil(total_seconds))
+
+
+def _format_duration(seconds: int) -> str:
+    remaining = max(1, int(seconds))
+    hours, remaining = divmod(remaining, 3600)
+    minutes, seconds = divmod(remaining, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return "".join(parts)
+
+
+def _matrix_timeout(plans: list[ResolvedRunPlan]) -> str:
+    total_seconds = sum(
+        _parse_duration_seconds(plan.execution.timeout) for plan in plans
+    )
+    # Leave room for the supervisor task plus any hoisted setup/teardown work.
+    total_seconds += 3600
+    return _format_duration(total_seconds)
 
 
 def render_pipelinerun(
@@ -165,6 +216,7 @@ def render_matrix_pipelinerun(
             "pipelineRef": {"name": pipeline_name},
             "taskRunTemplate": {"serviceAccountName": next(iter(service_accounts))},
             "ttlSecondsAfterFinished": next(iter(ttl_values)),
+            "timeouts": {"pipeline": _matrix_timeout(plans)},
             "params": [
                 {"name": "RUN_PLANS", "value": run_plans_json},
                 *(
