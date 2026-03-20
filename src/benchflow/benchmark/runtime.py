@@ -111,6 +111,20 @@ def parse_multiturn_data_param(data: str, concurrency: int) -> str:
     return ",".join(parts)
 
 
+def _has_multiturn_expression(value: Any) -> bool:
+    if value is None:
+        return False
+    return "*concurrency" in str(value).lower()
+
+
+def _multiturn_mode_enabled(
+    *, data: str | None, max_seconds: Any = None, max_requests: Any = None
+) -> bool:
+    return any(
+        _has_multiturn_expression(value) for value in (data, max_seconds, max_requests)
+    )
+
+
 def extract_metrics_from_benchmark(benchmark: Dict[str, Any]) -> Dict[str, Any]:
     metrics = {}
     try:
@@ -494,6 +508,83 @@ def run_benchmark_without_mlflow(
     logger.info(f"Starting benchmark for rates: {rate}")
     logger.info(f"Results will be saved to: {output_dir}")
 
+    multiturn_mode = _multiturn_mode_enabled(
+        data=data,
+        max_seconds=max_seconds,
+        max_requests=max_requests,
+    )
+    if multiturn_mode:
+        logger.info(
+            "Multiturn mode enabled - running separate commands per concurrency"
+        )
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        concurrencies = [r.strip() for r in rate.split(",") if r.strip()]
+        logger.info(f"Running {len(concurrencies)} separate benchmark commands")
+
+        for concurrency_str in concurrencies:
+            concurrency = int(concurrency_str)
+            parsed_data = (
+                parse_multiturn_data_param(data, concurrency) if data else None
+            )
+            parsed_max_requests = (
+                int(parse_multiturn_expression(str(max_requests), concurrency))
+                if max_requests is not None
+                else None
+            )
+            parsed_max_seconds = (
+                int(parse_multiturn_expression(str(max_seconds), concurrency))
+                if max_seconds is not None
+                else None
+            )
+
+            logger.info(f"Starting benchmark for concurrency={concurrency}")
+            logger.info(f"  Original data: {data}")
+            logger.info(f"  Parsed data: {parsed_data}")
+            logger.info(f"  Original max_requests: {max_requests}")
+            logger.info(f"  Parsed max_requests: {parsed_max_requests}")
+            logger.info(f"  Original max_seconds: {max_seconds}")
+            logger.info(f"  Parsed max_seconds: {parsed_max_seconds}")
+
+            output_json = f"{output_dir}/benchmark_output_rate_{concurrency}.json"
+            json_path, console_log_path = run_guidellm_cli(
+                target=target,
+                model=model,
+                rate=concurrency_str,
+                backend_type=backend_type,
+                rate_type=rate_type,
+                data=parsed_data,
+                max_seconds=parsed_max_seconds,
+                max_requests=parsed_max_requests,
+                processor=processor,
+                output_path=output_json,
+            )
+
+            benchmarks = []
+            if Path(json_path).exists():
+                logger.info(f"Benchmark results saved to: {json_path}")
+                with open(json_path, "r") as f:
+                    result_json = json.load(f)
+                benchmarks = result_json.get("benchmarks", [])
+                logger.info(f"Found {len(benchmarks)} benchmark results")
+            else:
+                raise FileNotFoundError(f"Benchmark output JSON not found: {json_path}")
+
+            for i, benchmark in enumerate(benchmarks):
+                metrics = extract_metrics_from_benchmark(benchmark)
+                if metrics:
+                    logger.info(
+                        f"Benchmark {i + 1} metrics for concurrency={concurrency}: "
+                        f"{json.dumps(metrics, indent=2)}"
+                    )
+
+            if Path(console_log_path).exists():
+                logger.info(f"Console log saved to: {console_log_path}")
+
+        logger.info(
+            "Multiturn benchmarks completed. Visualization report generation skipped."
+        )
+        return output_dir
+
     json_path, console_log_path, benchmarks, html_report = _run_and_process_benchmark(
         target=target,
         model=model,
@@ -554,8 +645,11 @@ def run_benchmark_with_mlflow(
 
     mlflow.set_experiment(experiment_name)
 
-    # Check if multi-turn mode is enabled
-    multiturn_mode = os.environ.get("MULTITURN", "false").lower() == "true"
+    multiturn_mode = _multiturn_mode_enabled(
+        data=data,
+        max_seconds=max_seconds,
+        max_requests=max_requests,
+    )
 
     # Run name for the whole sweep
     # Use the execution name if provided by the backend, otherwise generate one
@@ -569,7 +663,7 @@ def run_benchmark_with_mlflow(
     logger.info(f"Starting benchmark sweep: rates={rate}")
     if multiturn_mode:
         logger.info(
-            "MULTITURN mode enabled - running separate commands per concurrency"
+            "Multiturn mode enabled - running separate commands per concurrency"
         )
 
     with mlflow.start_run(run_name=run_name) as run:
@@ -1525,15 +1619,24 @@ def _run_benchmark_mode(
 )
 @click.option(
     "--data",
-    help="Data config, for example prompt_tokens=1000,output_tokens=1000.",
+    help=(
+        "Data config, for example prompt_tokens=1000,output_tokens=1000. "
+        "Expressions like prefix_count=2*concurrency automatically enable one run per concurrency."
+    ),
 )
 @click.option(
     "--max-seconds",
-    help="Max duration in seconds. Supports expressions in multiturn mode.",
+    help=(
+        "Max duration in seconds. Expressions like 2*concurrency automatically "
+        "enable one run per concurrency."
+    ),
 )
 @click.option(
     "--max-requests",
-    help="Max requests. Supports expressions like 10*concurrency in multiturn mode.",
+    help=(
+        "Max requests. Expressions like 10*concurrency automatically enable "
+        "one run per concurrency."
+    ),
 )
 @click.option("--processor", help="Processor or tokenizer name.")
 @click.option("--accelerator", help="Accelerator type, for example H200 or A100.")
