@@ -7,7 +7,6 @@ from typing import Callable
 
 import click
 import yaml
-from click.shell_completion import CompletionItem
 
 from ..cluster import discover_repo_root
 from ..orchestration import load_run_plan_from_sources
@@ -352,43 +351,6 @@ def load_runtime_plan(args: argparse.Namespace):
     return load_plan(args)
 
 
-def _completion_repo_root(ctx: click.Context) -> Path:
-    repo_root = ctx.params.get("repo_root")
-    if repo_root:
-        return Path(repo_root).resolve()
-    return discover_repo_root(Path.cwd())
-
-
-def _completion_profiles_dir(ctx: click.Context) -> Path:
-    profiles_dir = ctx.params.get("profiles_dir")
-    if profiles_dir:
-        return Path(profiles_dir).resolve()
-    return _completion_repo_root(ctx) / "profiles"
-
-
-def complete_profile_names(
-    kind: str | None = None,
-) -> Callable[[click.Context, click.Parameter, str], list[CompletionItem]]:
-    def _complete(
-        ctx: click.Context, param: click.Parameter, incomplete: str
-    ) -> list[CompletionItem]:
-        profiles_dir = _completion_profiles_dir(ctx)
-        names = sorted(
-            {
-                entry.name
-                for entry in list_profile_entries(profiles_dir)
-                if kind in (None, entry.kind)
-            }
-        )
-        return [
-            CompletionItem(name)
-            for name in names
-            if not incomplete or name.startswith(incomplete)
-        ]
-
-    return _complete
-
-
 def apply_click_options(
     decorators: list[Callable[[Callable[..., object]], Callable[..., object]]],
 ) -> Callable[[Callable[..., object]], Callable[..., object]]:
@@ -449,17 +411,14 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
         ),
         click.option(
             "--deployment-profile",
-            shell_complete=complete_profile_names("deployment"),
             help="Deployment profile name.",
         ),
         click.option(
             "--benchmark-profile",
-            shell_complete=complete_profile_names("benchmark"),
             help="Benchmark profile name.",
         ),
         click.option(
             "--metrics-profile",
-            shell_complete=complete_profile_names("metrics"),
             help="Metrics profile name.",
         ),
         click.option(

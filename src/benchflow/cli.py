@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 
 import click
-from click.shell_completion import get_completion_class
 
 from .cluster import CommandError
 from .commands.experiment import experiment_group
@@ -58,25 +57,6 @@ CONTEXT_SETTINGS = {
 )
 def cli() -> None:
     pass
-
-
-def _completion_var(prog_name: str) -> str:
-    return f"_{prog_name.replace('-', '_').upper()}_COMPLETE"
-
-
-@cli.command(
-    "completion",
-    short_help="Generate shell completion",
-    help="Emit the shell completion script for bash or zsh.",
-)
-@click.argument("shell", type=click.Choice(("bash", "zsh")))
-def completion_command(shell: str) -> int:
-    completion_class = get_completion_class(shell)
-    if completion_class is None:
-        raise click.ClickException(f"unsupported shell: {shell}")
-    script = completion_class(cli, {}, "bflow", _completion_var("bflow")).source()
-    click.echo(script, nl=False)
-    return 0
 
 
 cli.add_command(bootstrap_command)
