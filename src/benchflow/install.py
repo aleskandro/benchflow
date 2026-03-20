@@ -13,6 +13,12 @@ import yaml
 
 from .assets import asset_text, render_yaml_documents
 from .cluster import CommandError, discover_repo_root, require_command
+from .kueue import (
+    DEFAULT_CONTROLLER_IMAGE,
+    KUEUE_NAMESPACE,
+    REMOTE_CAPACITY_CONTROLLER_DEPLOYMENT,
+    ensure_cluster_queue_resources,
+)
 from .ui import detail, emit, panel, rule, step, success, warning
 
 
@@ -39,11 +45,13 @@ class BootstrapOptions:
     single_cluster: bool = False
     install_grafana: bool = True
     install_tekton: bool = True
+    install_kueue: bool = True
     install_accelerator_prerequisites: bool = True
     install_models_storage: bool = True
     install_results_storage: bool = True
     tekton_channel: str = "latest"
     target_kubeconfig: str | None = None
+    benchflow_image: str = DEFAULT_CONTROLLER_IMAGE
     models_storage_access_mode: str = "ReadWriteOnce"
     models_storage_size: str = "250Gi"
     models_storage_class: str | None = None
@@ -52,6 +60,7 @@ class BootstrapOptions:
 
 
 class Installer:
+    kueue_namespace = KUEUE_NAMESPACE
     pipelines_operator_namespace = "openshift-operators"
     pipelines_runtime_namespace = "openshift-pipelines"
     nfd_namespace = "openshift-nfd"
@@ -106,9 +115,13 @@ class Installer:
         if self.options.install_tekton:
             self.install_tekton_if_needed()
             self.configure_tekton_scc()
+        if self.options.install_kueue:
+            self.install_kueue_if_needed()
         self.install_grafana_if_needed()
         self.install_real_secrets()
         self.apply_namespaced_resources()
+        if self.options.install_kueue:
+            self.apply_kueue_support_resources()
         self.apply_grafana_stack()
         self.print_summary()
         return 0
@@ -122,6 +135,7 @@ class Installer:
                 ("Bootstrap mode", self.bootstrap_mode),
                 ("Namespace", options.namespace),
                 ("Grafana namespace", self.grafana_namespace),
+                ("Kueue namespace", self.kueue_namespace),
                 ("NFD namespace", self.nfd_namespace),
                 ("GPU operator namespace", self.gpu_operator_namespace),
                 (
@@ -133,6 +147,7 @@ class Installer:
                     ),
                 ),
                 ("Install Tekton if missing", str(options.install_tekton).lower()),
+                ("Install Kueue if missing", str(options.install_kueue).lower()),
                 ("Install Grafana if missing", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
                 (
@@ -189,6 +204,7 @@ class Installer:
                 ("Bootstrap mode", self.bootstrap_mode),
                 ("Namespace", options.namespace),
                 ("Grafana namespace", self.grafana_namespace),
+                ("Kueue namespace", self.kueue_namespace),
                 ("NFD namespace", self.nfd_namespace),
                 ("GPU operator namespace", self.gpu_operator_namespace),
                 (
@@ -200,6 +216,7 @@ class Installer:
                     ),
                 ),
                 ("Tekton install attempted", str(options.install_tekton).lower()),
+                ("Kueue install attempted", str(options.install_kueue).lower()),
                 ("Grafana install attempted", str(options.install_grafana).lower()),
                 ("OpenShift Pipelines channel", options.tekton_channel),
                 (
@@ -410,6 +427,7 @@ class Installer:
     def _base_asset_variables(self) -> dict[str, Any]:
         return {
             "BENCHFLOW_NAMESPACE": self.options.namespace,
+            "BENCHFLOW_IMAGE": self.options.benchflow_image,
             "GRAFANA_NAMESPACE": self.grafana_namespace,
             "GRAFANA_SERVICE_ACCOUNT": self.grafana_datasource_service_account,
             "GRAFANA_DATASOURCE_TOKEN_SECRET": self.grafana_datasource_token_secret,
@@ -541,6 +559,43 @@ class Installer:
                 "pipelineruns.tekton.dev",
             )
         )
+
+    def _kueue_crds_present(self) -> bool:
+        return all(
+            self._resource_exists("get", "crd", name)
+            for name in (
+                "admissionchecks.kueue.x-k8s.io",
+                "clusterqueues.kueue.x-k8s.io",
+                "localqueues.kueue.x-k8s.io",
+                "resourceflavors.kueue.x-k8s.io",
+                "workloads.kueue.x-k8s.io",
+            )
+        )
+
+    def kueue_ready(self) -> bool:
+        if not self._kueue_crds_present():
+            return False
+        if not self._resource_exists(
+            "get",
+            "deployment",
+            "kueue-controller-manager",
+            "-n",
+            self.kueue_namespace,
+        ):
+            return False
+        deployment = self._oc_json(
+            "get",
+            "deployment",
+            "kueue-controller-manager",
+            "-n",
+            self.kueue_namespace,
+            retry=True,
+            description="reading deployment/kueue-controller-manager",
+        )
+        status = deployment.get("status", {}) or {}
+        ready = int(status.get("readyReplicas", 0) or 0)
+        desired = int(status.get("replicas", 0) or 0)
+        return desired > 0 and ready >= desired
 
     def _print_olm_diagnostics(
         self, *, subscription_name: str, namespace: str, catalog_source: str
@@ -1057,6 +1112,107 @@ class Installer:
                 description=f"waiting for {deployment} in {self.pipelines_runtime_namespace}",
             )
 
+    def install_kueue_if_needed(self) -> None:
+        if self.kueue_ready():
+            success("Kueue CRDs and controller are already present")
+            return
+
+        self.ensure_namespace(self.kueue_namespace)
+        if not self._kueue_crds_present():
+            step(f"Installing Kueue in {self.kueue_namespace}")
+            self._oc(
+                "apply",
+                "--server-side",
+                "-f",
+                "https://github.com/kubernetes-sigs/kueue/releases/download/v0.16.4/manifests.yaml",
+                retry=True,
+                description="installing Kueue",
+                echo_output=True,
+            )
+
+        step("Waiting for Kueue CRDs")
+        for crd_name in (
+            "crd/admissionchecks.kueue.x-k8s.io",
+            "crd/clusterqueues.kueue.x-k8s.io",
+            "crd/localqueues.kueue.x-k8s.io",
+            "crd/resourceflavors.kueue.x-k8s.io",
+            "crd/workloads.kueue.x-k8s.io",
+        ):
+            self._wait_for_resource(
+                resource=crd_name,
+                namespace=None,
+                timeout_seconds=600,
+                label=crd_name,
+            )
+
+        step("Waiting for the Kueue controller manager")
+        self._wait_for_resource(
+            resource="deployment/kueue-controller-manager",
+            namespace=self.kueue_namespace,
+            timeout_seconds=600,
+            label=f"deployment/kueue-controller-manager in namespace {self.kueue_namespace}",
+        )
+        self._oc(
+            "wait",
+            "--for=condition=available",
+            "--timeout=10m",
+            "deployment/kueue-controller-manager",
+            "-n",
+            self.kueue_namespace,
+            retry=True,
+            description="waiting for deployment/kueue-controller-manager",
+        )
+
+    def apply_kueue_support_resources(self) -> None:
+        step("Applying BenchFlow Kueue support resources")
+        self._apply_asset_documents(
+            "operators/kueue/controller.yaml",
+            namespace=None,
+            description="applying BenchFlow Kueue support resources",
+            variables=self._base_asset_variables(),
+        )
+        self.wait_for_kueue_support_ready(timeout_seconds=600)
+
+    def wait_for_kueue_support_ready(self, timeout_seconds: int) -> None:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if not self._resource_exists(
+                "get",
+                "deployment",
+                REMOTE_CAPACITY_CONTROLLER_DEPLOYMENT,
+                "-n",
+                self.options.namespace,
+            ):
+                time.sleep(5)
+                continue
+            deployment = self._oc_json(
+                "get",
+                "deployment",
+                REMOTE_CAPACITY_CONTROLLER_DEPLOYMENT,
+                "-n",
+                self.options.namespace,
+                retry=True,
+                description=f"reading deployment/{REMOTE_CAPACITY_CONTROLLER_DEPLOYMENT}",
+            )
+            status = deployment.get("status", {}) or {}
+            ready = int(status.get("readyReplicas", 0) or 0)
+            desired = int(status.get("replicas", 0) or 0)
+            if desired > 0 and ready >= desired:
+                return
+            time.sleep(5)
+        raise CommandError(
+            "timed out waiting for the BenchFlow remote-capacity controller deployment"
+        )
+
+    def register_kueue_cluster_queue(
+        self, *, cluster_name: str, gpu_capacity: int
+    ) -> None:
+        ensure_cluster_queue_resources(
+            namespace=self.options.namespace,
+            cluster_name=cluster_name,
+            gpu_capacity=gpu_capacity,
+        )
+
     def configure_tekton_scc(self) -> None:
         if not self._resource_exists(
             "get", "namespace", self.pipelines_runtime_namespace
@@ -1365,4 +1521,41 @@ def run_bootstrap(repo_root: Path, options: BootstrapOptions) -> int:
     return installer.run()
 
 
-__all__ = ["BootstrapOptions", "Installer", "run_bootstrap", "discover_repo_root"]
+def reconcile_management_cluster_queue(
+    repo_root: Path,
+    *,
+    namespace: str,
+    cluster_name: str,
+    gpu_capacity: int,
+    benchflow_image: str = DEFAULT_CONTROLLER_IMAGE,
+) -> None:
+    installer = Installer(
+        repo_root,
+        BootstrapOptions(
+            namespace=namespace,
+            install_grafana=False,
+            install_tekton=False,
+            install_kueue=True,
+            install_accelerator_prerequisites=False,
+            install_models_storage=False,
+            install_results_storage=False,
+            benchflow_image=benchflow_image,
+        ),
+    )
+    installer.ensure_cluster_access()
+    installer.ensure_namespace(namespace)
+    installer.install_kueue_if_needed()
+    installer.apply_kueue_support_resources()
+    installer.register_kueue_cluster_queue(
+        cluster_name=cluster_name,
+        gpu_capacity=gpu_capacity,
+    )
+
+
+__all__ = [
+    "BootstrapOptions",
+    "Installer",
+    "discover_repo_root",
+    "reconcile_management_cluster_queue",
+    "run_bootstrap",
+]

@@ -7,6 +7,15 @@ from typing import Any
 
 from ..cluster import CommandError, create_manifest
 from ..contracts import ExecutionContext, ResolvedRunPlan, ValidationError
+from ..kueue import (
+    create_reservation_workload,
+    delete_reservation_workload,
+    link_reservation_to_execution,
+    queue_name_from_labels,
+    requested_gpus_from_labels,
+    reservation_required_for_labels,
+    wait_for_reservation,
+)
 from ..loaders import load_run_plan_data, load_run_plan_file
 from ..setup import load_setup_state
 from ..toolbox import setup_platform, teardown_platform
@@ -48,6 +57,7 @@ def render_execution_manifest(
     execution_name: str = DEFAULT_EXECUTION_NAME,
     setup_mode: str = "auto",
     teardown: bool = True,
+    skip_kueue_reservation: bool = False,
     benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     return _TEKTON.render_run(
@@ -55,6 +65,7 @@ def render_execution_manifest(
         execution_name=execution_name,
         setup_mode=setup_mode,
         teardown=teardown,
+        skip_kueue_reservation=skip_kueue_reservation,
         benchflow_image=benchflow_image,
     )
 
@@ -158,13 +169,60 @@ def stream_execution_logs(
 
 
 def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
-    submitted = create_manifest(
-        json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
-    )
-    name = submitted.get("metadata", {}).get("name")
-    if not name:
-        raise ValidationError("execution submission returned no name")
-    return str(name)
+    labels = {
+        str(key): str(value)
+        for key, value in (manifest.get("metadata", {}) or {}).get("labels", {}).items()
+    }
+    reservation_name = ""
+    if reservation_required_for_labels(labels):
+        cluster_name = queue_name_from_labels(labels)
+        requested_gpus = requested_gpus_from_labels(labels)
+        metadata = manifest.get("metadata", {}) or {}
+        execution_prefix = str(
+            metadata.get("name") or metadata.get("generateName") or "benchflow"
+        ).rstrip("-")
+        execution_timeout = str(
+            (manifest.get("spec", {}) or {}).get("timeouts", {}).get("pipeline") or "3h"
+        )
+        reservation_name = create_reservation_workload(
+            namespace=namespace,
+            cluster_name=cluster_name,
+            execution_prefix=execution_prefix,
+            requested_gpu_count=requested_gpus,
+            execution_timeout=execution_timeout,
+        )
+        step(
+            f"Waiting for queue admission in {cluster_name} for a {requested_gpus}-GPU execution"
+        )
+        try:
+            wait_for_reservation(namespace=namespace, workload_name=reservation_name)
+        except BaseException:
+            delete_reservation_workload(namespace, reservation_name)
+            raise
+
+    try:
+        submitted = create_manifest(
+            json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
+        )
+        name = submitted.get("metadata", {}).get("name")
+        if not name:
+            raise ValidationError("execution submission returned no name")
+        execution_name = str(name)
+        if reservation_name:
+            try:
+                link_reservation_to_execution(
+                    namespace=namespace,
+                    workload_name=reservation_name,
+                    execution_name=execution_name,
+                )
+            except BaseException:
+                delete_reservation_workload(namespace, reservation_name)
+                raise
+        return execution_name
+    except BaseException:
+        if reservation_name:
+            delete_reservation_workload(namespace, reservation_name)
+        raise
 
 
 def run_matrix_supervisor(
@@ -226,6 +284,7 @@ def run_matrix_supervisor(
                 execution_name=child_execution_name,
                 setup_mode="skip" if setup_hoisted else "auto",
                 teardown=False if setup_hoisted else True,
+                skip_kueue_reservation=True,
                 benchflow_image=benchflow_image,
             )
             name = submit_execution_manifest(manifest, plan.deployment.namespace)

@@ -89,6 +89,8 @@ bflow bootstrap
 This prepares the control plane only:
 
 - OpenShift Pipelines
+- Kueue
+- BenchFlow remote-capacity controller
 - Grafana
 - BenchFlow RBAC
 - `benchmark-results` PVC
@@ -112,10 +114,13 @@ run workloads there:
 - NFD operator and `NodeFeatureDiscovery` instance
 - NVIDIA GPU Operator and `ClusterPolicy`
 - OpenShift Pipelines
+- Kueue
+- BenchFlow remote-capacity controller
 - Grafana
 - BenchFlow RBAC
 - `models-storage` and `benchmark-results` PVCs
 - repo-root Tekton tasks and pipelines
+- a `local` Kueue queue sized from the cluster's discovered GPU capacity
 
 ### Remote target cluster
 
@@ -136,6 +141,13 @@ bootstrap:
 - Grafana is not installed unless `--install-grafana` is passed
 - when `--cluster-name` is also set, BenchFlow creates a management-cluster
   kubeconfig Secret with the same name
+- when `--cluster-name` is also set, BenchFlow also registers a Kueue queue for
+  that target cluster in the management cluster, sized from the target
+  cluster's discovered GPU capacity
+
+If you are developing BenchFlow itself, pass `--benchflow-image ghcr.io/...`
+to `bflow bootstrap` so the management-cluster remote-capacity controller uses
+the same image tag as your Tekton runs.
 
 ## Cluster Topologies
 
@@ -202,6 +214,18 @@ spec:
 Use `--target-kubeconfig` only for direct local BenchFlow commands such as
 target-cluster bootstrap. Tekton `PipelineRun`s cannot mount your local
 filesystem, so in-cluster executions must use `kubeconfig_secret`.
+
+BenchFlow uses Kueue only in the management cluster. Before a `PipelineRun` is
+created, BenchFlow creates a Kueue reservation `Workload` in the management
+cluster, waits for the remote-capacity AdmissionCheck to admit it, and then
+submits the Tekton `PipelineRun`. For remote target clusters, the queue name is
+the `--cluster-name` value; for same-cluster runs, the queue name is `local`.
+
+Important limitation:
+- this Kueue admission path only gates GPU capacity and start order
+- it does not replace a cluster-level lock for shared platform mutations
+- concurrent runs can still race on setup and teardown of shared platform state
+- until BenchFlow has an explicit cluster lock, treat Kueue as capacity admission, not full mutation safety
 
 ## Profiles
 

@@ -11,6 +11,7 @@ from typing import Any
 
 from ..cluster import CommandError, require_command, run_command, run_json_command
 from ..contracts import ExecutionSummary, ResolvedRunPlan, ValidationError
+from ..kueue import execution_labels_for_matrix, execution_labels_for_plan
 from ..ui import detail, step, success, warning
 
 _SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
@@ -96,6 +97,7 @@ def render_pipelinerun(
     pipeline_name: str,
     setup_mode: str,
     teardown: bool,
+    skip_kueue_reservation: bool = False,
     benchflow_image: str | None = None,
 ) -> dict[str, Any]:
     if plan.target_cluster.kubeconfig and not plan.target_cluster.kubeconfig_secret:
@@ -132,7 +134,12 @@ def render_pipelinerun(
         "kind": "PipelineRun",
         "metadata": {
             "generateName": f"{plan.metadata.name}-",
-            "labels": _common_labels(plan, backend="tekton"),
+            "labels": {
+                **_common_labels(plan, backend="tekton"),
+                **execution_labels_for_plan(
+                    plan, skip_reservation=skip_kueue_reservation
+                ),
+            },
         },
         "spec": {
             "pipelineRef": {"name": pipeline_name},
@@ -216,6 +223,7 @@ def render_matrix_pipelinerun(
                 "benchflow.io/platform": "matrix",
                 "benchflow.io/mode": "matrix",
                 "benchflow.io/execution-backend": "tekton",
+                **execution_labels_for_matrix(plans),
             },
         },
         "spec": {
@@ -537,6 +545,7 @@ class TektonOrchestrator:
         execution_name: str,
         setup_mode: str,
         teardown: bool,
+        skip_kueue_reservation: bool = False,
         benchflow_image: str | None = None,
     ) -> dict[str, Any]:
         return render_pipelinerun(
@@ -544,6 +553,7 @@ class TektonOrchestrator:
             pipeline_name=execution_name,
             setup_mode=setup_mode,
             teardown=teardown,
+            skip_kueue_reservation=skip_kueue_reservation,
             benchflow_image=benchflow_image,
         )
 

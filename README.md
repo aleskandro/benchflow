@@ -28,7 +28,7 @@ Then bootstrap the cluster:
 bflow bootstrap --single-cluster
 ```
 
-Use `bflow bootstrap --single-cluster` when BenchFlow will orchestrate and run workloads in the same cluster. Plain `bflow bootstrap` is the management-cluster path: it installs Tekton, Grafana, RBAC, the `benchmark-results` PVC, and the repo-root Tekton tasks and pipelines, but it does not install NFD, the GPU Operator, or the `models-storage` PVC. For a remote target cluster, use `bflow bootstrap --target-kubeconfig ... --cluster-name ...`.
+Use `bflow bootstrap --single-cluster` when BenchFlow will orchestrate and run workloads in the same cluster. Plain `bflow bootstrap` is the management-cluster path: it installs Tekton, Kueue, the BenchFlow remote-capacity controller, Grafana, RBAC, the `benchmark-results` PVC, and the repo-root Tekton tasks and pipelines, but it does not install NFD, the GPU Operator, or the `models-storage` PVC. For a remote target cluster, use `bflow bootstrap --target-kubeconfig ... --cluster-name ...`; BenchFlow bootstraps the target runtime pieces there and automatically registers that cluster in the management-cluster Kueue queues.
 
 The narrow path is the shipped smoke experiment:
 

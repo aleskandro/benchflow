@@ -28,7 +28,17 @@ from ..orchestration import (
     stream_execution_logs,
 )
 from ..remote_jobs import remote_run_plan_json, run_remote_job
-from ..install import BootstrapOptions, run_bootstrap
+from ..install import (
+    BootstrapOptions,
+    reconcile_management_cluster_queue,
+    run_bootstrap,
+)
+from ..kueue import (
+    DEFAULT_CONTROLLER_IMAGE,
+    LOCAL_CLUSTER_QUEUE,
+    discover_cluster_gpu_capacity,
+    run_remote_capacity_controller,
+)
 from ..loaders import load_run_plan_data
 from ..repository import clone_repo
 from ..tasking import assert_task_status
@@ -48,7 +58,7 @@ from ..toolbox import (
     upload_artifact_directory,
     upload_plan_results,
 )
-from ..ui import detail
+from ..ui import detail, warning
 from ..waiting import wait_for_endpoint
 from .shared import (
     invoke_handler,
@@ -156,6 +166,9 @@ def _apply_target_kubeconfig_secret(
 def cmd_bootstrap(args: argparse.Namespace) -> int:
     repo_root = repo_root_from(args)
     namespace = args.namespace or "benchflow"
+    benchflow_image = str(args.benchflow_image or DEFAULT_CONTROLLER_IMAGE).strip()
+    if not benchflow_image:
+        raise ValidationError("benchflow image must not be empty")
     target_kubeconfig = (
         str(Path(args.target_kubeconfig).resolve()) if args.target_kubeconfig else None
     )
@@ -193,17 +206,19 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         if args.install_grafana is not None
         else (single_cluster or not remote_target)
     )
-    return run_bootstrap(
+    result = run_bootstrap(
         repo_root,
         BootstrapOptions(
             namespace=namespace,
             single_cluster=single_cluster,
             install_grafana=install_grafana,
             install_tekton=install_tekton,
+            install_kueue=(single_cluster or not remote_target),
             install_accelerator_prerequisites=(single_cluster or remote_target),
             install_models_storage=(single_cluster or remote_target),
             install_results_storage=True,
             target_kubeconfig=target_kubeconfig,
+            benchflow_image=benchflow_image,
             models_storage_class=args.models_storage_class,
             models_storage_size=args.models_size or "250Gi",
             models_storage_access_mode=args.models_access_mode or "ReadWriteOnce",
@@ -211,6 +226,36 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             results_storage_size=args.results_size or "20Gi",
         ),
     )
+    if result != 0:
+        return result
+
+    if single_cluster:
+        gpu_capacity = discover_cluster_gpu_capacity()
+        if gpu_capacity == 0:
+            warning(
+                "Discovered 0 GPUs while registering the local Kueue queue; rerun bootstrap once GPU resources are visible if this cluster should execute GPU workloads."
+            )
+        reconcile_management_cluster_queue(
+            repo_root,
+            namespace=namespace,
+            cluster_name=LOCAL_CLUSTER_QUEUE,
+            gpu_capacity=gpu_capacity,
+            benchflow_image=benchflow_image,
+        )
+    elif target_kubeconfig and cluster_name:
+        gpu_capacity = discover_cluster_gpu_capacity(target_kubeconfig)
+        if gpu_capacity == 0:
+            warning(
+                f"Discovered 0 GPUs in target cluster {cluster_name!r}; rerun bootstrap once GPU resources are visible if this target cluster should execute GPU workloads."
+            )
+        reconcile_management_cluster_queue(
+            repo_root,
+            namespace=namespace,
+            cluster_name=cluster_name,
+            gpu_capacity=gpu_capacity,
+            benchflow_image=benchflow_image,
+        )
+    return result
 
 
 def cmd_target_kubeconfig_secret_create(args: argparse.Namespace) -> int:
@@ -772,6 +817,14 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_remote_capacity_controller(args: argparse.Namespace) -> int:
+    run_remote_capacity_controller(
+        namespace=args.namespace,
+        poll_interval_seconds=args.poll_interval_seconds,
+    )
+    return 0
+
+
 @click.command(
     "bootstrap",
     help=(
@@ -829,6 +882,15 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     help=(
         "Name of the remote cluster. When used with --target-kubeconfig, bootstrap also "
         "creates a management-cluster kubeconfig Secret with this name."
+    ),
+)
+@click.option(
+    "--benchflow-image",
+    default=DEFAULT_CONTROLLER_IMAGE,
+    show_default=True,
+    help=(
+        "BenchFlow image used for management-cluster support components such as the "
+        "remote-capacity controller."
     ),
 )
 @click.option(
@@ -1708,6 +1770,27 @@ def task_assert_status_command(**kwargs: object) -> int:
 )
 def task_run_experiment_matrix_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_run_experiment_matrix, **kwargs)
+
+
+@task_group.command(
+    "remote-capacity-controller",
+    help="Internal command used by the management cluster to reconcile remote Kueue capacity.",
+    short_help="Run the remote-capacity controller",
+)
+@click.option(
+    "--namespace",
+    required=True,
+    help="BenchFlow namespace watched by the controller.",
+)
+@click.option(
+    "--poll-interval-seconds",
+    default=10,
+    show_default=True,
+    type=int,
+    help="Polling interval used by the controller loop.",
+)
+def task_remote_capacity_controller_command(**kwargs: object) -> int:
+    return invoke_handler(cmd_task_remote_capacity_controller, **kwargs)
 
 
 @click.command(
