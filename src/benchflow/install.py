@@ -36,8 +36,12 @@ CONNECTIVITY_MARKERS = (
 @dataclass
 class BootstrapOptions:
     namespace: str = "benchflow"
+    single_cluster: bool = False
     install_grafana: bool = True
     install_tekton: bool = True
+    install_accelerator_prerequisites: bool = True
+    install_models_storage: bool = True
+    install_results_storage: bool = True
     tekton_channel: str = "latest"
     target_kubeconfig: str | None = None
     models_storage_access_mode: str = "ReadWriteOnce"
@@ -67,25 +71,38 @@ class Installer:
     def grafana_namespace(self) -> str:
         return f"{self.options.namespace}-grafana"
 
+    @property
+    def bootstrap_mode(self) -> str:
+        if self.options.single_cluster:
+            return "single-cluster"
+        if self.options.target_kubeconfig:
+            return "remote-target"
+        return "management-cluster"
+
     def run(self) -> int:
         self.ensure_cluster_access()
-        self.ensure_storage_class(self.options.models_storage_class, "models-storage")
-        self.ensure_storage_class(
-            self.options.results_storage_class, "benchmark-results"
-        )
-        self.ensure_default_storage_class_if_needed(
-            self.options.models_storage_class, "models-storage"
-        )
-        self.ensure_default_storage_class_if_needed(
-            self.options.results_storage_class, "benchmark-results"
-        )
+        if self.options.install_models_storage:
+            self.ensure_storage_class(
+                self.options.models_storage_class, "models-storage"
+            )
+            self.ensure_default_storage_class_if_needed(
+                self.options.models_storage_class, "models-storage"
+            )
+        if self.options.install_results_storage:
+            self.ensure_storage_class(
+                self.options.results_storage_class, "benchmark-results"
+            )
+            self.ensure_default_storage_class_if_needed(
+                self.options.results_storage_class, "benchmark-results"
+            )
         self.ensure_namespace(self.options.namespace)
         if self.options.install_grafana:
             self.ensure_namespace(self.grafana_namespace)
 
         self.print_intro()
 
-        self.install_accelerator_prerequisites()
+        if self.options.install_accelerator_prerequisites:
+            self.install_accelerator_prerequisites()
         if self.options.install_tekton:
             self.install_tekton_if_needed()
             self.configure_tekton_scc()
@@ -102,13 +119,18 @@ class Installer:
         panel(
             "Configuration",
             (
+                ("Bootstrap mode", self.bootstrap_mode),
                 ("Namespace", options.namespace),
                 ("Grafana namespace", self.grafana_namespace),
                 ("NFD namespace", self.nfd_namespace),
                 ("GPU operator namespace", self.gpu_operator_namespace),
                 (
                     "GPU prerequisites",
-                    "NFD operator + instance, GPU operator + ClusterPolicy",
+                    (
+                        "NFD operator + instance, GPU operator + ClusterPolicy"
+                        if options.install_accelerator_prerequisites
+                        else "not installed in this bootstrap mode"
+                    ),
                 ),
                 ("Install Tekton if missing", str(options.install_tekton).lower()),
                 ("Install Grafana if missing", str(options.install_grafana).lower()),
@@ -119,13 +141,21 @@ class Installer:
                 ),
                 (
                     "models-storage",
-                    f"{options.models_storage_access_mode} {options.models_storage_size}"
-                    f"{f' via {options.models_storage_class}' if options.models_storage_class else ''}",
+                    (
+                        f"{options.models_storage_access_mode} {options.models_storage_size}"
+                        f"{f' via {options.models_storage_class}' if options.models_storage_class else ''}"
+                        if options.install_models_storage
+                        else "not installed in this bootstrap mode"
+                    ),
                 ),
                 (
                     "benchmark-results",
-                    f"ReadWriteOnce {options.results_storage_size}"
-                    f"{f' via {options.results_storage_class}' if options.results_storage_class else ''}",
+                    (
+                        f"ReadWriteOnce {options.results_storage_size}"
+                        f"{f' via {options.results_storage_class}' if options.results_storage_class else ''}"
+                        if options.install_results_storage
+                        else "not installed in this bootstrap mode"
+                    ),
                 ),
                 (
                     "metrics access",
@@ -133,11 +163,14 @@ class Installer:
                 ),
             ),
         )
-        if options.models_storage_class is None:
+        if options.install_models_storage and options.models_storage_class is None:
             detail(
                 f"default StorageClass for models-storage: {self.default_storage_class()}"
             )
-        if options.models_storage_access_mode == "ReadWriteOnce":
+        if (
+            options.install_models_storage
+            and options.models_storage_access_mode == "ReadWriteOnce"
+        ):
             detail(
                 "note: the shipped qwen smoke profile is single-replica and matches ReadWriteOnce"
             )
@@ -153,13 +186,18 @@ class Installer:
         panel(
             "BenchFlow",
             (
+                ("Bootstrap mode", self.bootstrap_mode),
                 ("Namespace", options.namespace),
                 ("Grafana namespace", self.grafana_namespace),
                 ("NFD namespace", self.nfd_namespace),
                 ("GPU operator namespace", self.gpu_operator_namespace),
                 (
                     "GPU prerequisites",
-                    "NFD operator + instance, GPU operator + ClusterPolicy",
+                    (
+                        "NFD operator + instance, GPU operator + ClusterPolicy"
+                        if options.install_accelerator_prerequisites
+                        else "not installed in this bootstrap mode"
+                    ),
                 ),
                 ("Tekton install attempted", str(options.install_tekton).lower()),
                 ("Grafana install attempted", str(options.install_grafana).lower()),
@@ -170,13 +208,21 @@ class Installer:
                 ),
                 (
                     "models-storage",
-                    f"{options.models_storage_access_mode} {options.models_storage_size}"
-                    f"{f' via {options.models_storage_class}' if options.models_storage_class else ''}",
+                    (
+                        f"{options.models_storage_access_mode} {options.models_storage_size}"
+                        f"{f' via {options.models_storage_class}' if options.models_storage_class else ''}"
+                        if options.install_models_storage
+                        else "not installed in this bootstrap mode"
+                    ),
                 ),
                 (
                     "benchmark-results",
-                    f"ReadWriteOnce {options.results_storage_size}"
-                    f"{f' via {options.results_storage_class}' if options.results_storage_class else ''}",
+                    (
+                        f"ReadWriteOnce {options.results_storage_size}"
+                        f"{f' via {options.results_storage_class}' if options.results_storage_class else ''}"
+                        if options.install_results_storage
+                        else "not installed in this bootstrap mode"
+                    ),
                 ),
                 (
                     "metrics access",
@@ -200,9 +246,21 @@ class Installer:
         detail("config/cluster/secrets/mlflow-s3-creds.example.yaml")
         step("Example run")
         detail("pip install -e .")
-        detail(
-            f"bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml --namespace {options.namespace}"
-        )
+        if self.bootstrap_mode == "single-cluster":
+            detail(
+                f"bflow experiment run experiments/smoke/qwen3-06b-llm-d-smoke.yaml --namespace {options.namespace}"
+            )
+        elif self.bootstrap_mode == "management-cluster":
+            detail(
+                "bflow bootstrap --target-kubeconfig ~/.kube/target-cluster --cluster-name target-cluster"
+            )
+            detail(
+                f"bflow experiment run experiments/smoke/qwen3-06b-rhoai-kserve-smoke.yaml --namespace {options.namespace} --cluster-name target-cluster"
+            )
+        else:
+            detail(
+                f"bflow experiment run experiments/smoke/qwen3-06b-rhoai-kserve-smoke.yaml --namespace {options.namespace} --cluster-name <management-secret-name>"
+            )
 
     def _is_connectivity_error(self, output: str) -> bool:
         return any(marker in output for marker in CONNECTIVITY_MARKERS)
@@ -1085,18 +1143,29 @@ class Installer:
             )
 
     def apply_workspace_pvcs(self) -> None:
+        variables = {
+            "MODELS_STORAGE_ACCESS_MODE": self.options.models_storage_access_mode,
+            "MODELS_STORAGE_CLASS": self.options.models_storage_class,
+            "MODELS_STORAGE_SIZE": self.options.models_storage_size,
+            "RESULTS_STORAGE_CLASS": self.options.results_storage_class,
+            "RESULTS_STORAGE_SIZE": self.options.results_storage_size,
+        }
+        documents = self._render_asset_documents("workspaces/pvcs.yaml", variables)
+        selected: list[dict[str, Any]] = []
+        for document in documents:
+            name = str(document.get("metadata", {}).get("name") or "")
+            if name == "models-storage" and self.options.install_models_storage:
+                selected.append(document)
+            elif name == "benchmark-results" and self.options.install_results_storage:
+                selected.append(document)
+        if not selected:
+            detail("Skipping workspace PVCs for this bootstrap mode")
+            return
         step("Applying workspace PVCs")
-        self._apply_asset_documents(
-            "workspaces/pvcs.yaml",
+        self._apply_documents(
+            selected,
             namespace=self.options.namespace,
             description="applying workspace PVCs",
-            variables={
-                "MODELS_STORAGE_ACCESS_MODE": self.options.models_storage_access_mode,
-                "MODELS_STORAGE_CLASS": self.options.models_storage_class,
-                "MODELS_STORAGE_SIZE": self.options.models_storage_size,
-                "RESULTS_STORAGE_CLASS": self.options.results_storage_class,
-                "RESULTS_STORAGE_SIZE": self.options.results_storage_size,
-            },
         )
 
     def apply_cluster_monitoring_rbac(self) -> None:

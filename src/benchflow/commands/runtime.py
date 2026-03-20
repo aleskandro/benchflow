@@ -159,9 +159,18 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     target_kubeconfig = (
         str(Path(args.target_kubeconfig).resolve()) if args.target_kubeconfig else None
     )
+    single_cluster = bool(args.single_cluster)
     cluster_name = (
         _normalize_cluster_name(args.cluster_name) if args.cluster_name else None
     )
+    if single_cluster and target_kubeconfig:
+        raise ValidationError(
+            "--single-cluster cannot be used together with --target-kubeconfig"
+        )
+    if single_cluster and cluster_name:
+        raise ValidationError(
+            "--single-cluster cannot be used together with --cluster-name"
+        )
     if cluster_name and not target_kubeconfig:
         raise ValidationError(
             "--cluster-name requires --target-kubeconfig during bootstrap"
@@ -173,22 +182,27 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             kubeconfig_path=Path(target_kubeconfig),
             cluster_name=cluster_name,
         )
+    remote_target = bool(target_kubeconfig)
     install_tekton = (
         args.install_tekton
         if args.install_tekton is not None
-        else not bool(target_kubeconfig)
+        else (single_cluster or not remote_target)
     )
     install_grafana = (
         args.install_grafana
         if args.install_grafana is not None
-        else not bool(target_kubeconfig)
+        else (single_cluster or not remote_target)
     )
     return run_bootstrap(
         repo_root,
         BootstrapOptions(
             namespace=namespace,
+            single_cluster=single_cluster,
             install_grafana=install_grafana,
             install_tekton=install_tekton,
+            install_accelerator_prerequisites=(single_cluster or remote_target),
+            install_models_storage=(single_cluster or remote_target),
+            install_results_storage=True,
             target_kubeconfig=target_kubeconfig,
             models_storage_class=args.models_storage_class,
             models_storage_size=args.models_size or "250Gi",
@@ -761,8 +775,8 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
 @click.command(
     "bootstrap",
     help=(
-        "Bootstrap BenchFlow into a namespace and install NFD, the NVIDIA GPU "
-        "Operator, OpenShift Pipelines, Grafana, RBAC, and PVCs."
+        "Bootstrap BenchFlow for one of three modes: management cluster only, "
+        "remote target cluster, or a single cluster that does both."
     ),
     short_help="Bootstrap BenchFlow and cluster dependencies",
 )
@@ -780,7 +794,8 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     default=None,
     help=(
         "Install Grafana in the dedicated Grafana namespace. Defaults to enabled "
-        "for same-cluster bootstrap and disabled when --target-kubeconfig is set."
+        "for management-cluster and --single-cluster bootstrap, and disabled "
+        "when --target-kubeconfig is set."
     ),
 )
 @click.option(
@@ -788,7 +803,8 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     default=None,
     help=(
         "Install and reconcile Tekton resources on the target cluster. Defaults "
-        "to enabled for same-cluster bootstrap and disabled when --target-kubeconfig is set."
+        "to enabled for management-cluster and --single-cluster bootstrap, and "
+        "disabled when --target-kubeconfig is set."
     ),
 )
 @click.option(
@@ -796,7 +812,16 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     type=click.Path(dir_okay=False, path_type=Path),
     help=(
         "Kubeconfig used to bootstrap a remote target cluster instead of the current one. "
-        "This implies runtime-only bootstrap unless --install-tekton or --install-grafana is set."
+        "This implies target-cluster bootstrap unless --install-tekton or "
+        "--install-grafana is set."
+    ),
+)
+@click.option(
+    "--single-cluster",
+    is_flag=True,
+    help=(
+        "Bootstrap one cluster as both the management and target cluster. "
+        "This installs Tekton, Grafana, the shared PVCs, NFD, and the GPU operator together."
     ),
 )
 @click.option(

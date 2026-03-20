@@ -75,20 +75,51 @@ cp config/cluster/secrets/mlflow-s3-creds.example.yaml config/cluster/secrets/ml
 Then bootstrap the cluster:
 
 ```bash
+bflow bootstrap --single-cluster
+```
+
+`bflow bootstrap` supports three modes.
+
+### Management cluster only
+
+```bash
 bflow bootstrap
 ```
 
-Today `bflow bootstrap` installs or configures:
+This prepares the control plane only:
+
+- OpenShift Pipelines
+- Grafana
+- BenchFlow RBAC
+- `benchmark-results` PVC
+- repo-root Tekton tasks and pipelines
+
+This mode does not install:
+
+- NFD
+- NVIDIA GPU Operator
+- `models-storage` PVC
+
+### Single cluster
+
+```bash
+bflow bootstrap --single-cluster
+```
+
+This installs everything in one cluster so BenchFlow can both orchestrate and
+run workloads there:
 
 - NFD operator and `NodeFeatureDiscovery` instance
 - NVIDIA GPU Operator and `ClusterPolicy`
 - OpenShift Pipelines
 - Grafana
 - BenchFlow RBAC
-- BenchFlow PVCs
+- `models-storage` and `benchmark-results` PVCs
 - repo-root Tekton tasks and pipelines
 
-To bootstrap a remote target cluster:
+### Remote target cluster
+
+To bootstrap a target cluster from the management cluster:
 
 ```bash
 bflow bootstrap \
@@ -99,6 +130,8 @@ bflow bootstrap \
 When `--target-kubeconfig` is set, BenchFlow defaults to a runtime-only target
 bootstrap:
 
+- NFD and the GPU Operator are installed
+- `models-storage` and `benchmark-results` PVCs are installed
 - Tekton is not installed unless `--install-tekton` is passed
 - Grafana is not installed unless `--install-grafana` is passed
 - when `--cluster-name` is also set, BenchFlow creates a management-cluster
@@ -114,7 +147,7 @@ Tekton, BenchFlow, and the actual benchmarked workloads all live in the same
 cluster.
 
 ```bash
-bflow bootstrap
+bflow bootstrap --single-cluster
 bflow experiment run my-experiment.yaml
 ```
 

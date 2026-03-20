@@ -16,9 +16,6 @@ spec:
     - name: BENCHFLOW_IMAGE
       type: string
       default: ghcr.io/albertoperdomo2/benchflow/benchflow:latest
-    - name: MODELS_STORAGE_PVC
-      type: string
-      default: models-storage
     - name: SETUP_MODE
       type: string
       default: auto
@@ -27,6 +24,7 @@ spec:
       default: "true"
   workspaces:
     - name: results
+    - name: models-storage
     - name: source
     - name: target-kubeconfig
       optional: true
@@ -75,9 +73,9 @@ spec:
           value: $(params.BENCHFLOW_IMAGE)
         - name: RUN_PLAN
           value: $(params.RUN_PLAN)
-        - name: MODELS_STORAGE_PVC
-          value: $(params.MODELS_STORAGE_PVC)
       workspaces:
+        - name: models-storage
+          workspace: models-storage
         - name: target-kubeconfig
           workspace: target-kubeconfig
 

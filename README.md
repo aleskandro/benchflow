@@ -25,10 +25,10 @@ Before bootstrapping, create the real secret manifests next to the examples unde
 Then bootstrap the cluster:
 
 ```bash
-bflow bootstrap
+bflow bootstrap --single-cluster
 ```
 
-`bflow bootstrap` installs the shared baseline BenchFlow owns: NFD, the NVIDIA GPU Operator, OpenShift Pipelines, Grafana, RBAC, PVCs, and the repo-root Tekton tasks and pipelines. BenchFlow assumes an OpenShift cluster with cluster monitoring enabled, a reachable MLflow deployment backed by S3, and a usable storage class.
+Use `bflow bootstrap --single-cluster` when BenchFlow will orchestrate and run workloads in the same cluster. Plain `bflow bootstrap` is the management-cluster path: it installs Tekton, Grafana, RBAC, the `benchmark-results` PVC, and the repo-root Tekton tasks and pipelines, but it does not install NFD, the GPU Operator, or the `models-storage` PVC. For a remote target cluster, use `bflow bootstrap --target-kubeconfig ... --cluster-name ...`.
 
 The narrow path is the shipped smoke experiment:
 

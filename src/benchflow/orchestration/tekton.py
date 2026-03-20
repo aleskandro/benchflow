@@ -109,6 +109,16 @@ def render_pipelinerun(
             "name": "results",
             "persistentVolumeClaim": {"claimName": "benchmark-results"},
         },
+        {
+            "name": "models-storage",
+            (
+                "emptyDir" if plan.target_cluster.enabled() else "persistentVolumeClaim"
+            ): (
+                {}
+                if plan.target_cluster.enabled()
+                else {"claimName": plan.deployment.model_storage.pvc_name}
+            ),
+        },
         {"name": "source", "emptyDir": {}},
         {"name": "target-kubeconfig", "emptyDir": {}},
     ]
@@ -131,10 +141,6 @@ def render_pipelinerun(
             "timeouts": {"pipeline": plan.execution.timeout},
             "params": [
                 {"name": "RUN_PLAN", "value": run_plan_json},
-                {
-                    "name": "MODELS_STORAGE_PVC",
-                    "value": plan.deployment.model_storage.pvc_name,
-                },
                 *(
                     [{"name": "BENCHFLOW_IMAGE", "value": benchflow_image}]
                     if benchflow_image
