@@ -215,11 +215,16 @@ Use `--target-kubeconfig` only for direct local BenchFlow commands such as
 target-cluster bootstrap. Tekton `PipelineRun`s cannot mount your local
 filesystem, so in-cluster executions must use `kubeconfig_secret`.
 
-BenchFlow uses Kueue only in the management cluster. Before a `PipelineRun` is
-created, BenchFlow creates a Kueue reservation `Workload` in the management
-cluster, waits for the remote-capacity AdmissionCheck to admit it, and then
-submits the Tekton `PipelineRun`. For remote target clusters, the queue name is
-the `--cluster-name` value; for same-cluster runs, the queue name is `local`.
+BenchFlow uses Kueue only in the management cluster. When you submit an
+execution, BenchFlow creates a Kueue reservation `Workload` plus a stored
+pending `PipelineRun` manifest in the management cluster and then exits. The
+BenchFlow remote-capacity controller watches that `Workload`; once the
+AdmissionCheck admits it, the controller creates the Tekton `PipelineRun`
+itself. For remote target clusters, the queue name is the `--cluster-name`
+value; for same-cluster runs, the queue name is `local`.
+
+This means `bflow experiment run ...` is set-and-forget again: your laptop does
+not need to stay alive while the execution waits in queue.
 
 Important limitation:
 - this Kueue admission path only gates GPU capacity and start order

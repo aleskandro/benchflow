@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import copy
 import json
+import secrets
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +13,18 @@ from ..contracts import ExecutionContext, ResolvedRunPlan, ValidationError
 from ..kueue import (
     create_reservation_workload,
     delete_reservation_workload,
-    link_reservation_to_execution,
+    create_submission_configmap,
+    delete_submission_configmap,
+    list_reservation_workloads,
+    reservation_workload_by_execution_name,
     queue_name_from_labels,
     requested_gpus_from_labels,
     reservation_required_for_labels,
-    wait_for_reservation,
+    submission_configmap_name_from_labels,
+    summarize_reservation_workload,
 )
 from ..loaders import load_run_plan_data, load_run_plan_file
+from ..models import sanitize_name
 from ..setup import load_setup_state
 from ..toolbox import setup_platform, teardown_platform
 from ..ui import detail, step, success, warning
@@ -26,6 +34,32 @@ DEFAULT_EXECUTION_NAME = "benchflow-e2e"
 DEFAULT_MATRIX_EXECUTION_NAME = "benchflow-matrix"
 
 _TEKTON = TektonOrchestrator()
+
+
+def _materialize_execution_name(manifest: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    rendered = copy.deepcopy(manifest)
+    metadata = rendered.setdefault("metadata", {})
+    explicit_name = str(metadata.get("name") or "").strip()
+    if explicit_name:
+        labels = metadata.setdefault("labels", {})
+        labels["benchflow.io/execution-name"] = explicit_name
+        return rendered, explicit_name
+
+    raw_prefix = str(metadata.get("generateName") or "benchflow-").strip().rstrip("-")
+    prefix = sanitize_name(raw_prefix or "benchflow", max_length=56)
+    execution_name = f"{prefix}-{secrets.token_hex(3)}"
+    metadata["name"] = execution_name
+    metadata.pop("generateName", None)
+    labels = metadata.setdefault("labels", {})
+    labels["benchflow.io/execution-name"] = execution_name
+    return rendered, execution_name
+
+
+def _pending_execution_summary(namespace: str, name: str) -> dict[str, Any] | None:
+    workload = reservation_workload_by_execution_name(namespace, name)
+    if workload is None:
+        return None
+    return summarize_reservation_workload(workload).to_dict()
 
 
 def load_run_plan_from_sources(
@@ -103,6 +137,14 @@ def list_benchflow_executions(
     include_completed: bool = True,
 ) -> list[dict[str, Any]]:
     summaries = _execution_summaries_for_backend(namespace)
+    active_names = {str(item.get("name") or "") for item in summaries}
+    pending_entries: list[dict[str, Any]] = []
+    for workload in list_reservation_workloads(namespace):
+        summary = summarize_reservation_workload(workload).to_dict()
+        if not summary["name"] or summary["name"] in active_names:
+            continue
+        pending_entries.append(summary)
+    summaries.extend(pending_entries)
     summaries.sort(key=lambda item: item.get("start_time", "") or "", reverse=True)
     if not include_completed:
         summaries = [item for item in summaries if not item.get("finished")]
@@ -110,7 +152,10 @@ def list_benchflow_executions(
 
 
 def _ensure_execution_exists(namespace: str, name: str) -> None:
-    if _TEKTON.get(namespace, name) is None:
+    if (
+        _TEKTON.get(namespace, name) is None
+        and _pending_execution_summary(namespace, name) is None
+    ):
         raise CommandError(
             f"no BenchFlow execution named {name!r} found in {namespace}"
         )
@@ -125,14 +170,33 @@ def get_execution(namespace: str, name: str) -> dict[str, Any]:
 
 def summarize_execution(namespace: str, name: str) -> dict[str, Any]:
     payload = _TEKTON.get(namespace, name)
-    if payload is None:
-        raise CommandError(f"PipelineRun {name} in namespace {namespace} was not found")
-    return _TEKTON.summarize(payload).to_dict()
+    if payload is not None:
+        return _TEKTON.summarize(payload).to_dict()
+    pending = _pending_execution_summary(namespace, name)
+    if pending is not None:
+        return pending
+    raise CommandError(f"PipelineRun {name} in namespace {namespace} was not found")
 
 
 def cancel_execution(namespace: str, name: str) -> None:
-    _ensure_execution_exists(namespace, name)
-    _TEKTON.cancel(namespace, name)
+    payload = _TEKTON.get(namespace, name)
+    if payload is not None:
+        _TEKTON.cancel(namespace, name)
+        return
+    workload = reservation_workload_by_execution_name(namespace, name)
+    if workload is None:
+        raise CommandError(
+            f"no BenchFlow execution named {name!r} found in {namespace}"
+        )
+    delete_submission_configmap(
+        namespace,
+        submission_configmap_name_from_labels(
+            (workload.get("metadata", {}) or {}).get("labels", {}) or {}
+        ),
+    )
+    delete_reservation_workload(
+        namespace, str((workload.get("metadata", {}) or {}).get("name") or "")
+    )
 
 
 def follow_execution(
@@ -142,10 +206,33 @@ def follow_execution(
     poll_interval: int = 5,
 ) -> bool:
     _ensure_execution_exists(namespace, name)
-    return _TEKTON.follow(namespace, name, poll_interval=poll_interval)
+    queued_state: tuple[str, str] | None = None
+    while True:
+        payload = _TEKTON.get(namespace, name)
+        if payload is not None:
+            return _TEKTON.follow(namespace, name, poll_interval=poll_interval)
+        workload = reservation_workload_by_execution_name(namespace, name)
+        if workload is None:
+            raise CommandError(
+                f"queued BenchFlow execution {name!r} disappeared before it started"
+            )
+        summary = summarize_reservation_workload(workload)
+        current_state = (summary.status, summary.message)
+        if current_state != queued_state:
+            if summary.message:
+                detail(f"{name}: {summary.status} ({summary.message})")
+            else:
+                detail(f"{name}: {summary.status}")
+            queued_state = current_state
+        time.sleep(max(1, int(poll_interval)))
 
 
 def list_execution_steps(namespace: str, name: str) -> list[str]:
+    if _TEKTON.get(namespace, name) is None:
+        if _pending_execution_summary(namespace, name) is not None:
+            raise CommandError(
+                f"execution {name!r} is still queued and has no Pipeline tasks yet"
+            )
     _ensure_execution_exists(namespace, name)
     return _TEKTON.list_steps(namespace, name)
 
@@ -158,6 +245,11 @@ def stream_execution_logs(
     all_logs: bool = False,
     all_containers: bool = False,
 ) -> None:
+    if _TEKTON.get(namespace, name) is None:
+        if _pending_execution_summary(namespace, name) is not None:
+            raise CommandError(
+                f"execution {name!r} is still queued and has no logs yet"
+            )
     _ensure_execution_exists(namespace, name)
     _TEKTON.logs(
         namespace,
@@ -169,59 +261,51 @@ def stream_execution_logs(
 
 
 def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
+    manifest, execution_name = _materialize_execution_name(manifest)
     labels = {
         str(key): str(value)
         for key, value in (manifest.get("metadata", {}) or {}).get("labels", {}).items()
     }
-    reservation_name = ""
-    if reservation_required_for_labels(labels):
-        cluster_name = queue_name_from_labels(labels)
-        requested_gpus = requested_gpus_from_labels(labels)
-        metadata = manifest.get("metadata", {}) or {}
-        execution_prefix = str(
-            metadata.get("name") or metadata.get("generateName") or "benchflow"
-        ).rstrip("-")
-        execution_timeout = str(
-            (manifest.get("spec", {}) or {}).get("timeouts", {}).get("pipeline") or "3h"
-        )
-        reservation_name = create_reservation_workload(
-            namespace=namespace,
-            cluster_name=cluster_name,
-            execution_prefix=execution_prefix,
-            requested_gpu_count=requested_gpus,
-            execution_timeout=execution_timeout,
-        )
-        step(
-            f"Waiting for queue admission in {cluster_name} for a {requested_gpus}-GPU execution"
-        )
-        try:
-            wait_for_reservation(namespace=namespace, workload_name=reservation_name)
-        except BaseException:
-            delete_reservation_workload(namespace, reservation_name)
-            raise
-
-    try:
+    metadata = manifest.setdefault("metadata", {})
+    metadata["namespace"] = namespace
+    if not reservation_required_for_labels(labels):
         submitted = create_manifest(
             json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
         )
         name = submitted.get("metadata", {}).get("name")
         if not name:
             raise ValidationError("execution submission returned no name")
-        execution_name = str(name)
-        if reservation_name:
-            try:
-                link_reservation_to_execution(
-                    namespace=namespace,
-                    workload_name=reservation_name,
-                    execution_name=execution_name,
-                )
-            except BaseException:
-                delete_reservation_workload(namespace, reservation_name)
-                raise
+        return str(name)
+
+    cluster_name = queue_name_from_labels(labels)
+    requested_gpus = requested_gpus_from_labels(labels)
+    execution_timeout = str(
+        (manifest.get("spec", {}) or {}).get("timeouts", {}).get("pipeline") or "3h"
+    )
+    configmap_name = ""
+    reservation_name = ""
+    try:
+        configmap_name = create_submission_configmap(
+            namespace=namespace,
+            execution_name=execution_name,
+            manifest=manifest,
+        )
+        reservation_name = create_reservation_workload(
+            namespace=namespace,
+            cluster_name=cluster_name,
+            execution_prefix=execution_name,
+            execution_name=execution_name,
+            submission_configmap_name=configmap_name,
+            requested_gpu_count=requested_gpus,
+            execution_timeout=execution_timeout,
+            execution_labels=labels,
+        )
         return execution_name
     except BaseException:
         if reservation_name:
             delete_reservation_workload(namespace, reservation_name)
+        if configmap_name:
+            delete_submission_configmap(namespace, configmap_name)
         raise
 
 

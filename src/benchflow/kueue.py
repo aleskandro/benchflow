@@ -13,12 +13,13 @@ import yaml
 
 from .cluster import (
     CommandError,
+    create_manifest,
     require_any_command,
     run_command,
     run_json_command,
     use_kubeconfig,
 )
-from .contracts import ResolvedRunPlan, ValidationError
+from .contracts import ExecutionSummary, ResolvedRunPlan, ValidationError
 from .models import sanitize_name
 from .ui import detail, step, success, warning
 
@@ -36,6 +37,8 @@ REQUESTED_GPUS_LABEL = "benchflow.io/requested-gpus"
 CLUSTER_QUEUE_LABEL = "benchflow.io/cluster-name"
 TARGET_KUBECONFIG_SECRET_LABEL = "benchflow.io/target-kubeconfig-secret"
 EXECUTION_NAME_LABEL = "benchflow.io/execution-name"
+SUBMISSION_CONFIGMAP_LABEL = "benchflow.io/submission-configmap"
+SUBMISSION_MANIFEST_KEY = "manifest.json"
 
 
 def _now_rfc3339() -> str:
@@ -187,6 +190,12 @@ def execution_name_from_labels(labels: dict[str, str] | None) -> str:
     return str(labels.get(EXECUTION_NAME_LABEL) or "").strip()
 
 
+def submission_configmap_name_from_labels(labels: dict[str, str] | None) -> str:
+    if not labels:
+        return ""
+    return str(labels.get(SUBMISSION_CONFIGMAP_LABEL) or "").strip()
+
+
 def ensure_queue_registration(namespace: str, cluster_name: str) -> None:
     kubectl_cmd = require_any_command("oc", "kubectl")
     normalized_name = cluster_queue_name(cluster_name)
@@ -253,25 +262,36 @@ def _workload_json(
     namespace: str,
     cluster_name: str,
     execution_prefix: str,
+    execution_name: str,
+    submission_configmap_name: str,
     requested_gpu_count: int,
     max_execution_seconds: int,
+    execution_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     requests = (
         {REMOTE_GPU_RESOURCE: str(requested_gpu_count)} if requested_gpu_count else {}
     )
     name = _workload_name(f"{execution_prefix}-reservation")
+    labels = {
+        "app.kubernetes.io/name": "benchflow",
+        "benchflow.io/managed-by": "benchflow",
+        CLUSTER_QUEUE_LABEL: cluster_name,
+        REQUESTED_GPUS_LABEL: str(requested_gpu_count),
+        EXECUTION_NAME_LABEL: execution_name,
+        SUBMISSION_CONFIGMAP_LABEL: submission_configmap_name,
+    }
+    for key, value in (execution_labels or {}).items():
+        cleaned_key = str(key).strip()
+        cleaned_value = str(value).strip()
+        if cleaned_key and cleaned_value:
+            labels[cleaned_key] = cleaned_value
     return {
         "apiVersion": KUEUE_API_VERSION,
         "kind": "Workload",
         "metadata": {
             "name": name,
             "namespace": namespace,
-            "labels": {
-                "app.kubernetes.io/name": "benchflow",
-                "benchflow.io/managed-by": "benchflow",
-                CLUSTER_QUEUE_LABEL: cluster_name,
-                REQUESTED_GPUS_LABEL: str(requested_gpu_count),
-            },
+            "labels": labels,
         },
         "spec": {
             "active": True,
@@ -306,8 +326,11 @@ def create_reservation_workload(
     namespace: str,
     cluster_name: str,
     execution_prefix: str,
+    execution_name: str,
+    submission_configmap_name: str,
     requested_gpu_count: int,
     execution_timeout: str,
+    execution_labels: dict[str, str] | None = None,
 ) -> str:
     kubectl_cmd = require_any_command("oc", "kubectl")
     ensure_queue_registration(namespace, cluster_name)
@@ -315,8 +338,11 @@ def create_reservation_workload(
         namespace=namespace,
         cluster_name=cluster_name,
         execution_prefix=execution_prefix,
+        execution_name=execution_name,
+        submission_configmap_name=submission_configmap_name,
         requested_gpu_count=requested_gpu_count,
         max_execution_seconds=_duration_seconds(execution_timeout),
+        execution_labels=execution_labels,
     )
     result = run_command(
         [kubectl_cmd, "create", "-n", namespace, "-f", "-", "-o", "json"],
@@ -386,27 +412,132 @@ def delete_reservation_workload(namespace: str, workload_name: str) -> None:
     )
 
 
-def link_reservation_to_execution(
+def submission_configmap_name(execution_name: str) -> str:
+    return sanitize_name(f"{execution_name}-submission", max_length=63)
+
+
+def create_submission_configmap(
     *,
     namespace: str,
-    workload_name: str,
     execution_name: str,
-) -> None:
+    manifest: dict[str, Any],
+) -> str:
+    configmap_name = submission_configmap_name(execution_name)
+    payload = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": configmap_name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/name": "benchflow",
+                "benchflow.io/managed-by": "benchflow",
+                EXECUTION_NAME_LABEL: execution_name,
+                SUBMISSION_CONFIGMAP_LABEL: configmap_name,
+            },
+        },
+        "data": {
+            SUBMISSION_MANIFEST_KEY: json.dumps(
+                manifest, separators=(",", ":"), sort_keys=True
+            )
+        },
+    }
+    create_manifest(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True), namespace
+    )
+    detail(f"Stored queued execution manifest in ConfigMap {configmap_name}")
+    return configmap_name
+
+
+def _submission_configmap_payload(namespace: str, name: str) -> dict[str, Any] | None:
     kubectl_cmd = require_any_command("oc", "kubectl")
-    patch = {"metadata": {"labels": {EXECUTION_NAME_LABEL: execution_name}}}
+    result = run_command(
+        [kubectl_cmd, "get", "configmap", name, "-n", namespace, "-o", "json"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return json.loads(result.stdout or "{}")
+
+
+def delete_submission_configmap(namespace: str, configmap_name: str) -> None:
+    if not configmap_name:
+        return
+    kubectl_cmd = require_any_command("oc", "kubectl")
     run_command(
         [
             kubectl_cmd,
-            "patch",
-            "workload",
-            workload_name,
+            "delete",
+            "configmap",
+            configmap_name,
             "-n",
             namespace,
-            "--type",
-            "merge",
-            "-p",
-            json.dumps(patch),
+            "--ignore-not-found",
+            "--wait=false",
+        ],
+        check=False,
+    )
+
+
+def list_reservation_workloads(namespace: str) -> list[dict[str, Any]]:
+    kubectl_cmd = require_any_command("oc", "kubectl")
+    payload = run_json_command(
+        [
+            kubectl_cmd,
+            "get",
+            "workloads",
+            "-n",
+            namespace,
+            "-l",
+            "app.kubernetes.io/name=benchflow,benchflow.io/managed-by=benchflow",
+            "-o",
+            "json",
         ]
+    )
+    return list(payload.get("items", []) or [])
+
+
+def reservation_workload_by_execution_name(
+    namespace: str, execution_name: str
+) -> dict[str, Any] | None:
+    for workload in list_reservation_workloads(namespace):
+        if _workload_execution_name(workload) == execution_name:
+            return workload
+    return None
+
+
+def _workload_status_summary(workload: dict[str, Any]) -> tuple[str, bool, bool, str]:
+    status = workload.get("status", {}) or {}
+    if status.get("admission"):
+        return ("Starting", False, False, "admitted; waiting for PipelineRun start")
+    for check_state in status.get("admissionChecks", []) or []:
+        state = str(check_state.get("state") or "")
+        message = str(check_state.get("message") or "")
+        if state == "Rejected":
+            return ("Rejected", True, False, message)
+        if state in {"Ready", "Retry", "Pending"}:
+            return ("Queued", False, False, message)
+    return ("Queued", False, False, "")
+
+
+def summarize_reservation_workload(workload: dict[str, Any]) -> ExecutionSummary:
+    metadata = workload.get("metadata", {}) or {}
+    labels = metadata.get("labels", {}) or {}
+    status, finished, succeeded, message = _workload_status_summary(workload)
+    return ExecutionSummary(
+        name=_workload_execution_name(workload) or str(metadata.get("name", "")),
+        namespace=str(metadata.get("namespace", "")),
+        experiment=str(labels.get("benchflow.io/experiment", "")),
+        platform=str(labels.get("benchflow.io/platform", "")),
+        mode=str(labels.get("benchflow.io/mode", "")),
+        backend="tekton",
+        status=status,
+        finished=finished,
+        succeeded=succeeded,
+        start_time=str(metadata.get("creationTimestamp", "")),
+        completion_time="",
+        message=message,
     )
 
 
@@ -587,6 +718,11 @@ def _workload_execution_name(workload: dict[str, Any]) -> str:
     return execution_name_from_labels(labels)
 
 
+def _workload_submission_configmap_name(workload: dict[str, Any]) -> str:
+    labels = workload.get("metadata", {}).get("labels", {}) or {}
+    return submission_configmap_name_from_labels(labels)
+
+
 def _pipeline_run_payload(namespace: str, name: str) -> dict[str, Any] | None:
     kubectl_cmd = require_any_command("oc", "kubectl")
     result = run_command(
@@ -601,7 +737,7 @@ def _pipeline_run_payload(namespace: str, name: str) -> dict[str, Any] | None:
 
 def _pipeline_run_finished(payload: dict[str, Any] | None) -> bool:
     if not payload:
-        return True
+        return False
     status = payload.get("status", {}) or {}
     if status.get("completionTime"):
         return True
@@ -613,6 +749,47 @@ def _pipeline_run_finished(payload: dict[str, Any] | None) -> bool:
             if reason in {"Succeeded", "Failed", "Cancelled", "PipelineRunTimeout"}:
                 return True
     return False
+
+
+def _create_execution_from_workload(namespace: str, workload: dict[str, Any]) -> None:
+    execution_name = _workload_execution_name(workload)
+    if not execution_name:
+        return
+    if _pipeline_run_payload(namespace, execution_name) is not None:
+        return
+    configmap_name = _workload_submission_configmap_name(workload)
+    if not configmap_name:
+        raise CommandError(
+            f"reservation workload {workload.get('metadata', {}).get('name', '')} "
+            "is missing its submission ConfigMap label"
+        )
+    configmap = _submission_configmap_payload(namespace, configmap_name)
+    if configmap is None:
+        raise CommandError(
+            f"submission ConfigMap {configmap_name} for execution {execution_name} was not found"
+        )
+    manifest_text = str(
+        (configmap.get("data", {}) or {}).get(SUBMISSION_MANIFEST_KEY) or ""
+    ).strip()
+    if not manifest_text:
+        raise CommandError(
+            f"submission ConfigMap {configmap_name} is missing {SUBMISSION_MANIFEST_KEY}"
+        )
+    try:
+        manifest = json.loads(manifest_text)
+    except json.JSONDecodeError as exc:
+        raise CommandError(
+            f"submission ConfigMap {configmap_name} does not contain valid JSON"
+        ) from exc
+    metadata = manifest.setdefault("metadata", {})
+    metadata["name"] = execution_name
+    metadata["namespace"] = namespace
+    metadata.pop("generateName", None)
+    create_manifest(
+        json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
+    )
+    detail(f"Created PipelineRun {execution_name} from reservation workload")
+    delete_submission_configmap(namespace, configmap_name)
 
 
 def _patch_workload_check(
@@ -695,25 +872,11 @@ def run_remote_capacity_controller(
     namespace: str,
     poll_interval_seconds: int = 10,
 ) -> None:
-    kubectl_cmd = require_any_command("oc", "kubectl")
     step(f"Starting BenchFlow remote capacity controller for namespace {namespace}")
     while True:
         try:
             _patch_admission_check_active(REMOTE_CAPACITY_ADMISSION_CHECK)
-            workloads = run_json_command(
-                [
-                    kubectl_cmd,
-                    "get",
-                    "workloads",
-                    "-n",
-                    namespace,
-                    "-l",
-                    "app.kubernetes.io/name=benchflow,benchflow.io/managed-by=benchflow",
-                    "-o",
-                    "json",
-                ]
-            )
-            for workload in workloads.get("items", []) or []:
+            for workload in list_reservation_workloads(namespace):
                 metadata = workload.get("metadata", {}) or {}
                 workload_name = str(metadata.get("name") or "")
                 labels = metadata.get("labels", {}) or {}
@@ -724,11 +887,22 @@ def run_remote_capacity_controller(
                         detail(
                             f"Releasing Kueue reservation {workload_name} for finished PipelineRun {execution_name}"
                         )
+                        delete_submission_configmap(
+                            namespace, _workload_submission_configmap_name(workload)
+                        )
                         delete_reservation_workload(namespace, workload_name)
                         continue
 
                 status = workload.get("status", {}) or {}
                 if status.get("admission"):
+                    if execution_name and payload is None:
+                        try:
+                            _create_execution_from_workload(namespace, workload)
+                        except CommandError as exc:
+                            warning(
+                                "remote capacity controller could not create "
+                                f"PipelineRun for reservation {workload_name}: {exc}"
+                            )
                     continue
 
                 cluster_name = queue_name_from_labels(labels)
