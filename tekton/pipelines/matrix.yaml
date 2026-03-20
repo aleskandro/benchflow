@@ -23,6 +23,7 @@ spec:
       default: benchflow-e2e
   tasks:
     - name: run-experiment-matrix
+      timeout: "48h"
       taskRef:
         name: run-experiment-matrix
       params:
