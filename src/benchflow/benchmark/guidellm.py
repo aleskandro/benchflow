@@ -209,6 +209,7 @@ def generate_report(
     tp_size: int = 1,
     runtime_args: str = "",
     output_dir: Path | None = None,
+    output_file: Path | None = None,
     replicas: int = 1,
     mlflow_run_ids: list[str] | None = None,
     mlflow_tracking_uri: str | None = None,
@@ -226,6 +227,8 @@ def generate_report(
             mlflow_tracking_uri=mlflow_tracking_uri,
             additional_csv_files=additional_csv_files,
             versions_override=version_overrides or {},
+            output_dir=str(output_dir) if output_dir else None,
+            output_file=str(output_file) if output_file else None,
         )
         if not html_path:
             raise CommandError("GuideLLM report generation returned no output path")
@@ -244,6 +247,7 @@ def generate_report(
         tp_size=tp_size,
         runtime_args=runtime_args,
         output_dir=str(output_dir) if output_dir else None,
+        output_file=str(output_file) if output_file else None,
         replicas=replicas,
     )
     if not html_path:

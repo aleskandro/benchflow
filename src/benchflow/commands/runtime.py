@@ -684,6 +684,7 @@ def cmd_benchmark_report(args: argparse.Namespace) -> int:
         runtime_args=runtime_args,
         replicas=replicas,
         output_dir=Path(args.output_dir).resolve() if args.output_dir else None,
+        output_file=Path(args.output_file).resolve() if args.output_file else None,
         mlflow_run_ids=[
             item.strip() for item in args.mlflow_run_ids.split(",") if item.strip()
         ]
@@ -1466,7 +1467,12 @@ def benchmark_run_command(**kwargs: object) -> int:
 @click.option(
     "--output-dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    help="Directory where the report should be written.",
+    help="Directory where the auto-generated report filename should be written.",
+)
+@click.option(
+    "--output-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Exact output file path for the report. Overrides --output-dir.",
 )
 @click.option(
     "--mlflow-run-ids",

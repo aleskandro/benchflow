@@ -77,6 +77,22 @@ def _resolve_accelerator(
     return "unknown"
 
 
+def _resolve_report_output_path(
+    default_filename: str,
+    *,
+    output_dir: str | None = None,
+    output_file: str | None = None,
+) -> str:
+    if output_file:
+        resolved = Path(output_file)
+    elif output_dir:
+        resolved = Path(output_dir) / default_filename
+    else:
+        resolved = Path("/tmp") / default_filename
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return str(resolved)
+
+
 def _get_nested(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     """Safely get a nested value from a dictionary."""
     for key in keys:
@@ -392,6 +408,7 @@ def generate_visualization_report(
     tp_size: int = 1,
     runtime_args: str = "",
     output_dir: str = None,
+    output_file: str = None,
     replicas: int = 1,
 ) -> str:
     """
@@ -406,6 +423,7 @@ def generate_visualization_report(
         tp_size: Tensor parallelism size
         runtime_args: Runtime arguments
         output_dir: Output directory for HTML report
+        output_file: Explicit HTML report path
         replicas: Number of replicas
 
     Returns:
@@ -429,10 +447,11 @@ def generate_visualization_report(
         version_str = version.lower() if version else "unknown"
         html_filename = f"{model_short}_tp{tp_size}_{version_str}_report.html"
 
-        if output_dir:
-            html_path = str(Path(output_dir) / html_filename)
-        else:
-            html_path = f"/tmp/{html_filename}"
+        html_path = _resolve_report_output_path(
+            html_filename,
+            output_dir=output_dir,
+            output_file=output_file,
+        )
 
         processor = BenchmarkProcessor(
             json_path=json_path,
@@ -1161,6 +1180,8 @@ def generate_plot_only_report(
     mlflow_tracking_uri: str = None,
     additional_csv_files: list = None,
     versions_override: dict = None,
+    output_dir: str = None,
+    output_file: str = None,
 ) -> str:
     """
     Generate HTML report from existing MLflow runs without running benchmarks.
@@ -1171,6 +1192,8 @@ def generate_plot_only_report(
         mlflow_tracking_uri: MLflow tracking URI (optional)
         additional_csv_files: List of additional CSV file paths to include (optional)
         versions_override: Dictionary mapping old version names to new names (optional)
+        output_dir: Output directory for auto-generated report filename (optional)
+        output_file: Explicit report path (optional)
 
     Returns:
         Path to generated HTML report
@@ -1397,7 +1420,11 @@ def generate_plot_only_report(
     model_short = model.split("/")[-1].replace(" ", "_").replace("-", "_").lower()
     version_str = "_".join(compare_versions).lower().replace(".", "").replace("-", "")
     html_filename = f"{model_short}_comparison_{version_str}_report.html"
-    html_path = f"/tmp/{html_filename}"
+    html_path = _resolve_report_output_path(
+        html_filename,
+        output_dir=output_dir,
+        output_file=output_file,
+    )
 
     # Generate report using the combined DataFrame
     final_processor = BenchmarkProcessor(

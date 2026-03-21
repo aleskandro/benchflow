@@ -845,6 +845,15 @@ bflow benchmark report \
   --output-dir ./reports
 ```
 
+Write the report to an exact file path:
+
+```bash
+bflow benchmark report \
+  --mlflow-run-ids 3f0c1f...,91ab22... \
+  --mlflow-tracking-uri https://mlflow.example.com \
+  --output-file ./reports/rhoai-vs-llmd.html
+```
+
 Useful notes:
 
 - `--mlflow-run-ids` is the key input for MLflow-backed comparison reports
@@ -855,6 +864,7 @@ Useful notes:
 - `--versions` narrows the compared version set
 - `--version-override` renames version labels in the final report
 - `--additional-csv` lets you mix MLflow runs with local CSV inputs
+- `--output-file` overrides `--output-dir` when both are set
 - the command prints the resulting HTML report path when it succeeds
 
 Typical workflow:
