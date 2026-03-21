@@ -346,6 +346,8 @@ Override semantics:
 - `images.runtime`, `images.scheduler`, `scale.replicas`, `scale.tensor_parallelism`, and `llm_d.repo_ref` replace the profile value
 - `runtime.vllm_args` appends to the profile vLLM args
 - `runtime.env` merges by key and override values win on collisions
+- benchmark `requirements` can raise the effective deployment runtime settings for a given child `RunPlan`
+- today `requirements.min_max_model_len` raises the effective `--max-model-len` for that resolved run when the benchmark needs a larger context window than the deployment default
 - list-valued `model.name`, profile refs, and override axes produce a cartesian-product matrix
 - matrix children are submitted as independent child executions; Kueue can admit them in parallel when target-cluster GPU capacity allows it
 
@@ -408,6 +410,8 @@ spec:
   data: prompt_tokens=1000,output_tokens=1000 # no CLI override today
   max_seconds: 600 # no CLI override today
   max_requests: null # no CLI override today
+  requirements:
+    min_max_model_len: 8192 # no CLI override; raises the resolved deployment max-model-len when needed
   env:
     LOG_LEVEL: INFO # no CLI override today
 ```

@@ -8,6 +8,7 @@ import yaml
 
 from .models import (
     BenchmarkProfile,
+    BenchmarkRequirementsSpec,
     BenchmarkProfileSpec,
     ClusterTargetSpec,
     DeploymentProfile,
@@ -167,6 +168,26 @@ def _storage_from_dict(raw: dict[str, Any] | None) -> ModelStorageSpec:
     )
 
 
+def _benchmark_requirements_from_dict(
+    raw: dict[str, Any] | None,
+) -> BenchmarkRequirementsSpec:
+    raw = raw or {}
+    min_max_model_len = raw.get("min_max_model_len")
+    if min_max_model_len is None:
+        return BenchmarkRequirementsSpec()
+    try:
+        resolved = int(min_max_model_len)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            "spec.requirements.min_max_model_len must be an integer"
+        ) from exc
+    if resolved <= 0:
+        raise ValidationError(
+            "spec.requirements.min_max_model_len must be greater than zero"
+        )
+    return BenchmarkRequirementsSpec(min_max_model_len=resolved)
+
+
 def load_experiment(path: Path) -> Experiment:
     raw = load_yaml_file(path)
     if raw.get("kind") != "Experiment":
@@ -258,6 +279,7 @@ def load_benchmark_profile(path: Path) -> BenchmarkProfile:
         if spec.get("max_requests") is not None
         else None,
         env=env,
+        requirements=_benchmark_requirements_from_dict(spec.get("requirements")),
     )
     return BenchmarkProfile(
         api_version=str(raw.get("apiVersion", "benchflow.io/v1alpha1")),
@@ -359,6 +381,9 @@ def load_run_plan_data(raw: dict[str, Any]) -> ResolvedRunPlan:
             str(key): str(value)
             for key, value in (benchmark_raw.get("env") or {}).items()
         },
+        requirements=_benchmark_requirements_from_dict(
+            benchmark_raw.get("requirements")
+        ),
     )
 
     metrics_raw = raw.get("metrics") or {}

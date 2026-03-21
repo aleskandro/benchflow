@@ -8,5 +8,7 @@ spec:
   rates: [32, 64, 128, 256, 512]
   data: prompt_tokens=128,output_tokens=128,turns=5,prefix_tokens=10000,prefix_count=2*concurrency 
   max_requests: 10*concurrency
+  requirements:
+    min_max_model_len: 40960
   env:
     GUIDELLM__LOGGING__CONSOLE_LOG_LEVEL: "DEBUG"

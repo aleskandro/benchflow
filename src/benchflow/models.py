@@ -248,6 +248,11 @@ class DeploymentProfile:
 
 
 @dataclass(slots=True)
+class BenchmarkRequirementsSpec:
+    min_max_model_len: int | None = None
+
+
+@dataclass(slots=True)
 class BenchmarkProfileSpec:
     tool: str = "guidellm"
     backend_type: str = "openai_http"
@@ -257,6 +262,9 @@ class BenchmarkProfileSpec:
     max_seconds: int = 600
     max_requests: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    requirements: BenchmarkRequirementsSpec = field(
+        default_factory=BenchmarkRequirementsSpec
+    )
 
 
 @dataclass(slots=True)

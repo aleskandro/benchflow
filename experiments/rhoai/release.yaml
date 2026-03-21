@@ -10,7 +10,8 @@ spec:
     - rhoai-precise-prefix-cache
   benchmark_profile:
     - guidellm-concurrent-1k-1k
-    # - guidellm-concurrent-heavy-heterogeneous
+    - guidellm-concurrent-heavy-heterogeneous
+    - guidellm-multi-turn
   metrics_profile: detailed
   namespace: benchflow
   execution:

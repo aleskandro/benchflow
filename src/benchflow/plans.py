@@ -16,6 +16,7 @@ from .models import (
 )
 
 _MATRIX_CHILD_INDEX_LABEL = "benchflow.io/matrix-child-index"
+_MAX_MODEL_LEN_FLAG = "--max-model-len"
 
 
 def _release_name_for(experiment: Experiment) -> str:
@@ -67,6 +68,81 @@ def _scalar_override(value, field_name: str):
             )
         return value[0]
     return value
+
+
+def _parse_positive_int(value: str, *, field_name: str) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{field_name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValidationError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _strip_max_model_len(
+    args: list[str], *, field_name: str
+) -> tuple[list[str], int | None]:
+    cleaned: list[str] = []
+    resolved: int | None = None
+    index = 0
+    while index < len(args):
+        item = str(args[index]).strip()
+        if item.startswith(f"{_MAX_MODEL_LEN_FLAG}="):
+            resolved = _parse_positive_int(item.split("=", 1)[1], field_name=field_name)
+            index += 1
+            continue
+        if item == _MAX_MODEL_LEN_FLAG:
+            if index + 1 >= len(args):
+                raise ValidationError(f"{field_name} is missing a value")
+            resolved = _parse_positive_int(args[index + 1], field_name=field_name)
+            index += 2
+            continue
+        cleaned.append(str(args[index]))
+        index += 1
+    return cleaned, resolved
+
+
+def _resolve_vllm_args(
+    *,
+    deployment_args: list[str],
+    override_args: list[str],
+    benchmark_min_max_model_len: int | None,
+) -> list[str]:
+    base_args, deployment_max_model_len = _strip_max_model_len(
+        deployment_args,
+        field_name="deployment runtime max-model-len",
+    )
+    extra_args, override_max_model_len = _strip_max_model_len(
+        override_args,
+        field_name="spec.overrides.runtime.vllm_args max-model-len",
+    )
+
+    if (
+        override_max_model_len is not None
+        and benchmark_min_max_model_len is not None
+        and override_max_model_len < benchmark_min_max_model_len
+    ):
+        raise ValidationError(
+            "spec.overrides.runtime.vllm_args sets --max-model-len below "
+            "benchmark requirements.min_max_model_len"
+        )
+
+    candidates = [
+        value
+        for value in (
+            deployment_max_model_len,
+            benchmark_min_max_model_len,
+            override_max_model_len,
+        )
+        if value is not None
+    ]
+    resolved_max_model_len = max(candidates) if candidates else None
+
+    resolved_args = [*base_args, *extra_args]
+    if resolved_max_model_len is not None:
+        resolved_args.append(f"{_MAX_MODEL_LEN_FLAG}={resolved_max_model_len}")
+    return resolved_args
 
 
 def resolve_run_plan(
@@ -128,10 +204,11 @@ def resolve_run_plan(
             if tp_override is not None
             else deployment_profile.spec.runtime.tensor_parallelism
         ),
-        vllm_args=[
-            *deployment_profile.spec.runtime.vllm_args,
-            *experiment.spec.overrides.runtime.vllm_args,
-        ],
+        vllm_args=_resolve_vllm_args(
+            deployment_args=deployment_profile.spec.runtime.vllm_args,
+            override_args=experiment.spec.overrides.runtime.vllm_args,
+            benchmark_min_max_model_len=benchmark_profile.spec.requirements.min_max_model_len,
+        ),
         env={
             **deployment_profile.spec.runtime.env,
             **experiment.spec.overrides.runtime.env,
