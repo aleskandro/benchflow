@@ -11,6 +11,7 @@ from typing import Dict, Any
 
 import click
 import mlflow
+from mlflow.store.artifact.artifact_repository_registry import get_artifact_repository
 
 from ..ui import configure_logging, emit
 
@@ -40,6 +41,27 @@ class BenchmarkExecutionError(RuntimeError):
     def __init__(self, message: str, *, run_id: str = "") -> None:
         super().__init__(message)
         self.run_id = run_id
+
+
+def _list_run_artifacts_recursively(artifact_uri: str, root_path: str) -> list[str]:
+    repo = get_artifact_repository(artifact_uri)
+    pending = [root_path]
+    discovered: list[str] = []
+
+    while pending:
+        current_path = pending.pop()
+        for entry in repo.list_artifacts(current_path):
+            if entry.is_dir:
+                pending.append(entry.path)
+                continue
+            discovered.append(entry.path)
+
+    return sorted(discovered)
+
+
+def _download_run_artifact(artifact_uri: str, artifact_path: str, dst_path: str) -> str:
+    repo = get_artifact_repository(artifact_uri)
+    return repo.download_artifacts(artifact_path, dst_path=dst_path)
 
 
 def _get_nested(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -971,14 +993,13 @@ def fetch_mlflow_runs(run_ids: list, mlflow_tracking_uri: str = None) -> list:
                 )
                 artifact_paths = [str(f) for f in sorted(cached_files)]
             else:
-                # Download ALL benchmark*.json files from MLflow
-                client = mlflow.tracking.MlflowClient()
-                artifacts = client.list_artifacts(run_id, "results")
+                Path(cache_dir).mkdir(parents=True, exist_ok=True)
                 benchmark_files = [
-                    a.path
-                    for a in artifacts
-                    if a.path.startswith("results/benchmark")
-                    and a.path.endswith(".json")
+                    path
+                    for path in _list_run_artifacts_recursively(
+                        run.info.artifact_uri, "results"
+                    )
+                    if path.startswith("results/benchmark") and path.endswith(".json")
                 ]
 
                 if not benchmark_files:
@@ -990,7 +1011,9 @@ def fetch_mlflow_runs(run_ids: list, mlflow_tracking_uri: str = None) -> list:
 
                 # Download and cache all files
                 for benchmark_file in benchmark_files:
-                    downloaded_path = client.download_artifacts(run_id, benchmark_file)
+                    downloaded_path = _download_run_artifact(
+                        run.info.artifact_uri, benchmark_file, dst_path=cache_dir
+                    )
                     cached_path = Path(cache_dir) / Path(benchmark_file).name
                     cached_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy(downloaded_path, cached_path)
