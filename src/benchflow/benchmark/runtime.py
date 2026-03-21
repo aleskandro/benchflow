@@ -277,6 +277,7 @@ def run_guidellm_cli(
     processor: str = None,
     output_path: str = "benchmark_output.json",
 ) -> tuple[str, str]:
+    output_path_obj = Path(output_path)
     cmd = [
         "guidellm",
         "benchmark",
@@ -291,8 +292,10 @@ def run_guidellm_cli(
         rate_type,
         "--rate",
         str(rate),
-        "--output-path",
-        output_path,
+        "--output-dir",
+        str(output_path_obj.parent),
+        "--outputs",
+        output_path_obj.name,
     ]
 
     cmd.extend(["--backend-args", '{"timeout": 600}'])
@@ -310,7 +313,9 @@ def run_guidellm_cli(
 
     logger.info(f"Running guidellm command: {' '.join(cmd)}")
 
-    console_log_path = output_path.replace(".json", "_console.log")
+    console_log_path = str(
+        output_path_obj.with_name(f"{output_path_obj.stem}_console.log")
+    )
 
     try:
         with open(console_log_path, "w") as log_file:
@@ -337,7 +342,7 @@ def run_guidellm_cli(
             else:
                 logger.info("Guidellm completed successfully")
 
-        return output_path, console_log_path
+        return str(output_path_obj), console_log_path
 
     except Exception as e:
         logger.error(f"Guidellm command failed: {e}")
