@@ -64,6 +64,19 @@ def _download_run_artifact(artifact_uri: str, artifact_path: str, dst_path: str)
     return repo.download_artifacts(artifact_path, dst_path=dst_path)
 
 
+def _resolve_accelerator(
+    params: dict[str, Any], tags: dict[str, Any] | None = None
+) -> str:
+    accelerator = str(params.get("accelerator") or "").strip()
+    if accelerator:
+        return accelerator
+    if tags is not None:
+        accelerator = str(tags.get("accelerator") or "").strip()
+        if accelerator:
+            return accelerator
+    return "unknown"
+
+
 def _get_nested(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     """Safely get a nested value from a dictionary."""
     for key in keys:
@@ -1267,7 +1280,7 @@ def generate_plot_only_report(
         artifact_path = run_data["artifact_path"]
         composed_version = run_data["composed_version"]
 
-        accelerator = params.get("accelerator", "unknown")
+        accelerator = _resolve_accelerator(params, run_data.get("tags"))
         tp_size = int(params.get("tp", 1))
 
         # Extract replicas from MLflow params
@@ -1391,7 +1404,7 @@ def generate_plot_only_report(
         json_path=first_run["artifact_path"],
         s3_bucket=s3_bucket,
         s3_key=s3_key,
-        accelerator=params.get("accelerator", "unknown"),
+        accelerator=_resolve_accelerator(params, first_run.get("tags")),
         model_name=model,
         version=params.get("version", "unknown"),
         tp_size=int(params.get("tp", 1)),
