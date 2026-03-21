@@ -70,3 +70,10 @@ bflow watch <execution-name> --namespace benchflow
 BenchFlow also supports matrix experiments by turning one or more profile fields into lists; the cluster then runs the cartesian product through child executions. `rhoai` child executions can be admitted in parallel when target-cluster GPU capacity allows it, while `llm-d` child executions are submitted sequentially because the upstream GAIE deployment still creates shared namespaced resources that collide across parallel child deployments. Once the parent has submitted child executions, canceling the parent is only best-effort; already queued or running children may need individual cancellation.
 
 For the full command surface, RunPlan PipelineRun flow, matrix execution, and lower-level runtime commands, see [docs/ADVANCED.md](docs/ADVANCED.md).
+
+## Known Limitations
+
+- BenchFlow does not yet implement a cluster-level lock for shared platform setup and teardown, so concurrent mutating runs can still race on shared cluster state.
+- `llm-d` matrix children run sequentially today because the upstream GAIE deployment still creates shared namespaced resources that collide across parallel child deployments.
+- Matrix parent cancellation is best-effort after child executions have already been submitted; queued or running children may need to be cancelled individually.
+- Kueue only gates GPU capacity and start order. It does not replace mutation safety for shared platform resources.
