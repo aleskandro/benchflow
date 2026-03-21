@@ -218,6 +218,14 @@ def ensure_queue_registration(namespace: str, cluster_name: str) -> None:
         check=False,
     )
     if admissioncheck_result.returncode != 0:
+        details = (admissioncheck_result.stderr or "").strip() or (
+            admissioncheck_result.stdout or ""
+        ).strip()
+        if details:
+            raise CommandError(
+                "failed to read BenchFlow Kueue AdmissionCheck "
+                f"{REMOTE_CAPACITY_ADMISSION_CHECK!r}: {details}"
+            )
         raise CommandError(
             "BenchFlow Kueue support is not installed in the management cluster; "
             "run bflow bootstrap in the management cluster first"
@@ -237,6 +245,14 @@ def ensure_queue_registration(namespace: str, cluster_name: str) -> None:
         check=False,
     )
     if localqueue_result.returncode != 0:
+        details = (localqueue_result.stderr or "").strip() or (
+            localqueue_result.stdout or ""
+        ).strip()
+        if details:
+            raise CommandError(
+                f"failed to read Kueue LocalQueue {normalized_name!r} in namespace "
+                f"{namespace}: {details}"
+            )
         raise CommandError(
             f"no Kueue LocalQueue named {normalized_name!r} found in namespace {namespace}; "
             f"bootstrap the cluster registration for {cluster_name!r} first"
