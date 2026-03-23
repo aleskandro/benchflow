@@ -21,6 +21,9 @@ spec:
   router:
     route: {}
     gateway: {}
+{% if not custom_scheduler_enabled %}
+    scheduler: {}
+{% else %}
     scheduler:
       template:
 {% if precise_prefix_cache_enabled %}
@@ -170,5 +173,6 @@ spec:
             value: {{ model_name | tojson }}
           - name: PYTHONHASHSEED
             value: "42"
+{% endif %}
 {% endif %}
 {% endif %}

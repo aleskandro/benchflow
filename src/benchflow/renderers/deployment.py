@@ -69,6 +69,10 @@ def _rhoai_vllm_args(plan: ResolvedRunPlan) -> list[str]:
 
 
 def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
+    custom_scheduler_enabled = plan.deployment.mode in {
+        "approximate-prefix-cache",
+        "precise-prefix-cache",
+    }
     return {
         "release_name": plan.deployment.release_name,
         "namespace": plan.deployment.namespace,
@@ -82,12 +86,20 @@ def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
         "runtime_args": _rhoai_vllm_args(plan),
         "runtime_env": _rhoai_runtime_env(plan),
         "gpu_count": str(plan.deployment.runtime.tensor_parallelism),
+        "custom_scheduler_enabled": custom_scheduler_enabled,
+        "approximate_prefix_cache_enabled": (
+            plan.deployment.mode == "approximate-prefix-cache"
+        ),
         "precise_prefix_cache_enabled": plan.deployment.mode == "precise-prefix-cache",
     }
 
 
 def render_rhoai_manifest(plan: ResolvedRunPlan) -> dict[str, Any]:
-    if plan.deployment.mode not in {"kserve", "precise-prefix-cache"}:
+    if plan.deployment.mode not in {
+        "kserve",
+        "approximate-prefix-cache",
+        "precise-prefix-cache",
+    }:
         raise ValueError(f"unsupported RHOAI deployment mode: {plan.deployment.mode}")
     return render_jinja_yaml_document(
         "deployment/rhoai/llminferenceservice.yaml.j2",
