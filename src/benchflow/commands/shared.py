@@ -319,6 +319,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
             mlflow=MlflowSpec(
                 experiment=getattr(args, "mlflow_experiment", None)
                 or base_experiment.spec.mlflow.experiment,
+                version=base_experiment.spec.mlflow.version,
                 tags=mlflow_tags,
             ),
             execution=ExecutionSpec(

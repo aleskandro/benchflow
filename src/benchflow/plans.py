@@ -279,6 +279,7 @@ def resolve_run_plan(
     )
     mlflow = MlflowSpec(
         experiment=experiment.spec.mlflow.experiment.strip() or default_experiment_name,
+        version=experiment.spec.mlflow.version.strip(),
         tags=tags,
     )
 

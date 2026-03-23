@@ -115,13 +115,18 @@ class StageSpec:
 @dataclass(slots=True)
 class MlflowSpec:
     experiment: str = ""
+    version: str = ""
     tags: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "MlflowSpec":
         raw = raw or {}
         tags = {str(key): str(value) for key, value in (raw.get("tags") or {}).items()}
-        return cls(experiment=str(raw.get("experiment", "") or ""), tags=tags)
+        return cls(
+            experiment=str(raw.get("experiment", "") or ""),
+            version=str(raw.get("version", "") or ""),
+            tags=tags,
+        )
 
 
 @dataclass(slots=True)

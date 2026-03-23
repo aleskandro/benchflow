@@ -54,6 +54,9 @@ def _iso8601_now() -> str:
 
 
 def benchmark_version_from_plan(plan: ResolvedRunPlan) -> str:
+    explicit_version = str(plan.mlflow.version or "").strip()
+    if explicit_version:
+        return explicit_version
     if plan.deployment.platform == "llm-d":
         return f"llm-d-{plan.deployment.repo_ref}"
     if plan.deployment.platform == "rhoai":
