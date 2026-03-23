@@ -698,6 +698,7 @@ def run_benchmark_with_mlflow(
     replicas: str = "N/A",
     prefill_replicas: str = "N/A",
     decode_replicas: str = "N/A",
+    output_dir: str | None = None,
 ) -> str:
     if mlflow_tracking_uri:
         mlflow.set_tracking_uri(mlflow_tracking_uri)
@@ -782,6 +783,10 @@ def run_benchmark_with_mlflow(
             if multiturn_mode:
                 concurrencies = [r.strip() for r in rate.split(",")]
                 logger.info(f"Running {len(concurrencies)} separate benchmark commands")
+                target_output_dir = Path(output_dir or "/tmp")
+                target_output_dir.mkdir(parents=True, exist_ok=True)
+                successful_concurrencies: list[int] = []
+                failed_concurrencies: list[tuple[str, str]] = []
 
                 for concurrency_str in concurrencies:
                     try:
@@ -818,7 +823,10 @@ def run_benchmark_with_mlflow(
                         logger.info(f"  Parsed max_seconds: {parsed_max_seconds}")
 
                         # Generate unique output paths for this concurrency
-                        output_json = f"/tmp/benchmark_output_rate_{concurrency}.json"
+                        output_json = str(
+                            target_output_dir
+                            / f"benchmark_output_rate_{concurrency}.json"
+                        )
                         console_log_path = output_json.replace(".json", "_console.log")
 
                         # Run guidellm for this concurrency only
@@ -844,7 +852,9 @@ def run_benchmark_with_mlflow(
                             benchmarks = result_json.get("benchmarks", [])
                             logger.info(f"Found {len(benchmarks)} benchmark results")
                         else:
-                            logger.warning(f"Output JSON not found: {json_path}")
+                            raise FileNotFoundError(
+                                f"Benchmark output JSON not found: {json_path}"
+                            )
 
                         # Extract and log metrics with step=concurrency
                         for benchmark in benchmarks:
@@ -873,14 +883,42 @@ def run_benchmark_with_mlflow(
                         logger.info(
                             f"Completed benchmark for concurrency={concurrency}"
                         )
+                        successful_concurrencies.append(concurrency)
 
                     except Exception as e:
                         logger.error(
                             f"Benchmark failed for concurrency={concurrency_str}: {e}",
                             exc_info=True,
                         )
+                        failed_concurrencies.append(
+                            (concurrency_str, str(e).strip() or type(e).__name__)
+                        )
                         logger.info("Continuing with remaining concurrencies...")
                         continue
+
+                if failed_concurrencies:
+                    summary = ", ".join(
+                        f"{concurrency} ({reason})"
+                        for concurrency, reason in failed_concurrencies
+                    )
+                    if not successful_concurrencies:
+                        logger.error("All multiturn concurrencies failed")
+                    else:
+                        logger.error(
+                            "Multiturn benchmark completed with failed concurrencies: "
+                            f"{summary}"
+                        )
+                    raise BenchmarkExecutionError(
+                        "multiturn benchmark failed for concurrency value(s): "
+                        f"{summary}",
+                        run_id=run.info.run_id,
+                    )
+
+                if not successful_concurrencies:
+                    raise BenchmarkExecutionError(
+                        "multiturn benchmark produced no successful concurrency runs",
+                        run_id=run.info.run_id,
+                    )
 
                 # NOTE: HTML report generation is skipped for multi-turn mode
                 # Report generation will be handled separately after all runs complete
@@ -905,7 +943,7 @@ def run_benchmark_with_mlflow(
                     max_seconds=max_seconds,
                     max_requests=max_requests,
                     processor=processor,
-                    output_dir="/tmp",
+                    output_dir=output_dir or "/tmp",
                     accelerator=accelerator,
                     version=version,
                     tp_size=tp_size,

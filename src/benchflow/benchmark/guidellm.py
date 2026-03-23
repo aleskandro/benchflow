@@ -154,6 +154,7 @@ def run_benchmark(
                     tp_size=plan.deployment.runtime.tensor_parallelism,
                     runtime_args=_runtime_args(plan),
                     replicas=str(plan.deployment.runtime.replicas),
+                    output_dir=str(output_dir) if output_dir is not None else None,
                 )
             else:
                 if output_dir is None:

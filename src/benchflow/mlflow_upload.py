@@ -5,6 +5,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from mlflow.store.artifact.artifact_repository_registry import get_artifact_repository
+
 from .cluster import require_any_command, run_command
 from .models import ResolvedRunPlan
 from .ui import detail, step, success, warning
@@ -88,6 +90,107 @@ def _count_files(directory: Path) -> int:
     if not directory.exists():
         return 0
     return sum(1 for path in directory.rglob("*") if path.is_file())
+
+
+def _list_run_artifact_paths(
+    client, mlflow_run_id: str, root_path: str = ""
+) -> set[str]:
+    run = client.get_run(mlflow_run_id)
+    repo = get_artifact_repository(run.info.artifact_uri)
+    pending = [root_path.strip("/")]
+    discovered: set[str] = set()
+
+    while pending:
+        current_path = pending.pop()
+        for entry in repo.list_artifacts(current_path):
+            if entry.is_dir:
+                pending.append(entry.path)
+                continue
+            discovered.add(entry.path)
+
+    return discovered
+
+
+def _benchmark_workspace_artifact_root(relative_path: Path) -> str:
+    suffix = relative_path.suffix.lower()
+    if suffix == ".log":
+        return "logs"
+    if suffix in {".html", ".htm"}:
+        return "reports"
+    if suffix in {".json", ".csv"}:
+        return "results"
+    return "benchmark"
+
+
+def _upload_missing_benchmark_artifacts(
+    *,
+    client,
+    mlflow_run_id: str,
+    benchmark_dir: Path,
+) -> int:
+    if not benchmark_dir.exists():
+        return 0
+
+    candidate_files: list[tuple[Path, str, str]] = []
+    for file_path in sorted(
+        path for path in benchmark_dir.rglob("*") if path.is_file()
+    ):
+        relative_path = file_path.relative_to(benchmark_dir)
+        if relative_path.name.startswith("."):
+            continue
+        artifact_root = _benchmark_workspace_artifact_root(relative_path)
+        artifact_dir = (
+            Path(artifact_root) / relative_path.parent
+            if relative_path.parent != Path(".")
+            else Path(artifact_root)
+        )
+        artifact_dir_str = artifact_dir.as_posix().strip("/")
+        final_artifact_path = (
+            f"{artifact_dir_str}/{relative_path.name}"
+            if artifact_dir_str
+            else relative_path.name
+        )
+        candidate_files.append((file_path, artifact_dir_str, final_artifact_path))
+
+    if not candidate_files:
+        return 0
+
+    existing_paths: set[str] = set()
+    for artifact_root in sorted(
+        {
+            final_path.split("/", 1)[0]
+            for _, _, final_path in candidate_files
+            if "/" in final_path
+        }
+    ):
+        try:
+            existing_paths.update(
+                _list_run_artifact_paths(client, mlflow_run_id, artifact_root)
+            )
+        except Exception as exc:  # noqa: BLE001
+            warning(
+                "Failed to inspect existing MLflow artifacts under "
+                f"{artifact_root}: {exc}. Uploading benchmark workspace fallback files anyway."
+            )
+            existing_paths.clear()
+            break
+
+    uploaded_count = 0
+    for file_path, artifact_dir, final_artifact_path in candidate_files:
+        if final_artifact_path in existing_paths:
+            continue
+        detail(
+            f"Uploading fallback benchmark artifact {file_path.name}"
+            + (f" to {artifact_dir}" if artifact_dir else "")
+        )
+        client.log_artifact(
+            mlflow_run_id,
+            str(file_path),
+            artifact_path=artifact_dir or None,
+        )
+        uploaded_count += 1
+
+    return uploaded_count
 
 
 def upload_artifact_directory_to_mlflow(
@@ -206,12 +309,25 @@ def upload_to_mlflow(
         client.set_tag(mlflow_run_id, "grafana_url", full_grafana_url)
 
     artifact_count = 0
+    fallback_count = 0
     if artifacts_dir.exists():
-        if (artifacts_dir / "benchmark").exists():
-            detail(
-                "Skipping benchmark workspace bundle because GuideLLM already "
-                "logs its own results, reports, and console output"
+        benchmark_dir = artifacts_dir / "benchmark"
+        if benchmark_dir.exists():
+            fallback_count = _upload_missing_benchmark_artifacts(
+                client=client,
+                mlflow_run_id=mlflow_run_id,
+                benchmark_dir=benchmark_dir,
             )
+            if fallback_count:
+                detail(
+                    "Uploaded "
+                    f"{fallback_count} fallback benchmark artifact file(s) from {benchmark_dir}"
+                )
+            else:
+                detail(
+                    "No fallback benchmark artifacts were needed; MLflow already "
+                    "contained the benchmark results and console output"
+                )
         before_cleanup = _count_files(artifacts_dir)
         upload_artifact_directory_to_mlflow(
             mlflow_run_id=mlflow_run_id,
@@ -219,7 +335,7 @@ def upload_to_mlflow(
             cleanup_after_upload=False,
             exclude_names={"benchmark"},
         )
-        artifact_count = (
+        artifact_count = fallback_count + (
             before_cleanup - _count_files(artifacts_dir / "benchmark")
             if (artifacts_dir / "benchmark").exists()
             else before_cleanup
