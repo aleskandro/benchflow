@@ -116,6 +116,8 @@ spec:
           value: $(params.BENCHFLOW_IMAGE)
         - name: RUN_PLAN
           value: $(params.RUN_PLAN)
+        - name: ENABLED
+          value: $(tasks.resolve-run-plan.results.verify-completions)
       workspaces:
         - name: target-kubeconfig
           workspace: target-kubeconfig

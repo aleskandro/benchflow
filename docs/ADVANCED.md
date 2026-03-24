@@ -338,6 +338,7 @@ spec:
       owner: perf # --mlflow-tag owner=perf
   execution:
     timeout: 3h # --timeout
+    verify_completions: true # --verify-completions / --no-verify-completions
   overrides:
     images:
       runtime: ghcr.io/acme/vllm:dev # --runtime-image, string or list for matrix

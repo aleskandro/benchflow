@@ -834,6 +834,7 @@ def cmd_task_resolve_run_plan(args: argparse.Namespace) -> int:
         stage_benchmark_path=Path(args.stage_benchmark_path).resolve(),
         stage_collect_path=Path(args.stage_collect_path).resolve(),
         stage_cleanup_path=Path(args.stage_cleanup_path).resolve(),
+        verify_completions_path=Path(args.verify_completions_path).resolve(),
     )
     print("resolved")
     return 0
@@ -1821,6 +1822,12 @@ def task_group() -> None:
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
     help="File that receives the cleanup stage flag.",
+)
+@click.option(
+    "--verify-completions-path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="File that receives the verify-completions execution flag.",
 )
 def task_resolve_run_plan_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_resolve_run_plan, **kwargs)

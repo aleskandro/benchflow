@@ -17,6 +17,7 @@ def resolve_run_plan_stages(
     stage_benchmark_path,
     stage_collect_path,
     stage_cleanup_path,
+    verify_completions_path,
 ) -> None:
     if plan.benchmark.tool != "guidellm":
         raise ValidationError(
@@ -30,7 +31,7 @@ def resolve_run_plan_stages(
         "Stages: "
         f"download={plan.stages.download}, deploy={plan.stages.deploy}, "
         f"benchmark={plan.stages.benchmark}, collect={plan.stages.collect}, "
-        f"cleanup={plan.stages.cleanup}"
+        f"cleanup={plan.stages.cleanup}, verify_completions={plan.execution.verify_completions}"
     )
     emit(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
     write_stage_results(
@@ -40,6 +41,7 @@ def resolve_run_plan_stages(
         stage_benchmark_path=stage_benchmark_path,
         stage_collect_path=stage_collect_path,
         stage_cleanup_path=stage_cleanup_path,
+        verify_completions_path=verify_completions_path,
     )
     success("RunPlan resolved and stage outputs written")
 

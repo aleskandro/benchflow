@@ -16,6 +16,9 @@ spec:
       default: ghcr.io/albertoperdomo2/benchflow/benchflow:latest
     - name: RUN_PLAN
       type: string
+    - name: ENABLED
+      type: string
+      default: "true"
   workspaces:
     - name: target-kubeconfig
       description: Optional kubeconfig for remote target-cluster operations
@@ -23,15 +26,19 @@ spec:
   steps:
     - name: verify-completions
       image: $(params.IMAGE)
+      command:
+        - /bin/sh
+        - -ec
       env:
         - name: BENCHFLOW_REMOTE_IMAGE
           value: $(params.IMAGE)
         - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
           value: $(workspaces.target-kubeconfig.path)
-      command:
-        - bflow
       args:
-        - wait
-        - completions
-        - --run-plan-json
-        - $(params.RUN_PLAN)
+        - |
+          if [ "$(params.ENABLED)" != "true" ]; then
+            echo "Skipping completions endpoint verification because execution.verify_completions=false"
+            exit 0
+          fi
+          exec bflow wait completions \
+            --run-plan-json "$(params.RUN_PLAN)"

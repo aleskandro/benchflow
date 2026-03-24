@@ -328,6 +328,11 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                     if getattr(args, "timeout", None) is not None
                     else base_experiment.spec.execution.timeout
                 ),
+                verify_completions=(
+                    bool(getattr(args, "verify_completions"))
+                    if getattr(args, "verify_completions", None) is not None
+                    else base_experiment.spec.execution.verify_completions
+                ),
             ),
             target_cluster=ClusterTargetSpec(
                 kubeconfig=resolved_target_kubeconfig,
@@ -459,6 +464,11 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
         click.option(
             "--timeout",
             help="Execution timeout for the main PipelineRun, for example 3h or 30m.",
+        ),
+        click.option(
+            "--verify-completions/--no-verify-completions",
+            default=None,
+            help="Enable or disable the post-deploy completions sanity probe before benchmarking.",
         ),
         click.option(
             "--mlflow-experiment",

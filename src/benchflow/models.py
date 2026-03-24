@@ -132,6 +132,7 @@ class MlflowSpec:
 @dataclass(slots=True)
 class ExecutionSpec:
     timeout: str = "3h"
+    verify_completions: bool = True
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "ExecutionSpec":
@@ -139,7 +140,10 @@ class ExecutionSpec:
         timeout = str(raw.get("timeout", "3h") or "3h").strip()
         if not timeout:
             raise ValidationError("execution.timeout must not be empty")
-        return cls(timeout=timeout)
+        return cls(
+            timeout=timeout,
+            verify_completions=_as_bool(raw.get("verify_completions"), True),
+        )
 
 
 @dataclass(slots=True)

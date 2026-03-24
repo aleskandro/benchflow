@@ -13,6 +13,7 @@ def write_stage_results(
     stage_benchmark_path: Path,
     stage_collect_path: Path,
     stage_cleanup_path: Path,
+    verify_completions_path: Path,
 ) -> None:
     for path in (
         stage_download_path,
@@ -20,6 +21,7 @@ def write_stage_results(
         stage_benchmark_path,
         stage_collect_path,
         stage_cleanup_path,
+        verify_completions_path,
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
     stage_download_path.write_text(str(plan.stages.download).lower(), encoding="utf-8")
@@ -29,6 +31,9 @@ def write_stage_results(
     )
     stage_collect_path.write_text(str(plan.stages.collect).lower(), encoding="utf-8")
     stage_cleanup_path.write_text(str(plan.stages.cleanup).lower(), encoding="utf-8")
+    verify_completions_path.write_text(
+        str(plan.execution.verify_completions).lower(), encoding="utf-8"
+    )
 
 
 def assert_task_status(

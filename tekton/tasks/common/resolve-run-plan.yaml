@@ -18,6 +18,7 @@ spec:
     - name: stage-benchmark
     - name: stage-collect
     - name: stage-cleanup
+    - name: verify-completions
   steps:
     - name: resolve
       image: $(params.IMAGE)
@@ -38,3 +39,5 @@ spec:
         - $(results.stage-collect.path)
         - --stage-cleanup-path
         - $(results.stage-cleanup.path)
+        - --verify-completions-path
+        - $(results.verify-completions.path)
