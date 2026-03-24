@@ -1066,6 +1066,8 @@ class BenchmarkProcessor:
             specs = [
                 [{"colspan": 3}, None, None],
                 [{"colspan": 3}, None, None],
+                [{"colspan": 3}, None, None],
+                [{"colspan": 3}, None, None],
                 [{}, {}, {}],
                 [{}, {}, None],
                 [{}, {}, {}],
@@ -1074,6 +1076,8 @@ class BenchmarkProcessor:
             ]
             subplot_titles = [
                 "<b>Throughput</b><br><sub>Higher is better</sub>",
+                "<b>Throughput Efficiency by GPU</b><br><sub>Higher is better</sub>",
+                "<b>Token Throughput per GPU vs End-to-End Latency</b><br><sub>Higher throughput, lower latency</sub>",
                 "<b>TTFT Distribution by Concurrency</b><br><sub>Lower is better</sub>",
                 "<b>TTFT P1</b><br><sub>Lower is better</sub>",
                 "<b>TTFT P50</b><br><sub>Lower is better</sub>",
@@ -1090,10 +1094,12 @@ class BenchmarkProcessor:
                 "<b>E2E Latency P90</b><br><sub>Lower is better</sub>",
                 "<b>E2E Latency P99</b><br><sub>Lower is better</sub>",
             ]
-            total_rows = 7
-            row_heights = [1.2, 1.2, 1.0, 1.0, 1.0, 1.0, 1.0]
+            total_rows = 9
+            row_heights = [1.2, 1.0, 1.0, 1.2, 1.0, 1.0, 1.0, 1.0, 1.0]
         else:
             specs = [
+                [{"colspan": 3}, None, None],
+                [{"colspan": 3}, None, None],
                 [{"colspan": 3}, None, None],
                 [{}, {}, {}],
                 [{}, {}, None],
@@ -1103,6 +1109,8 @@ class BenchmarkProcessor:
             ]
             subplot_titles = [
                 "<b>Throughput</b><br><sub>Higher is better</sub>",
+                "<b>Throughput Efficiency by GPU</b><br><sub>Higher is better</sub>",
+                "<b>Token Throughput per GPU vs End-to-End Latency</b><br><sub>Higher throughput, lower latency</sub>",
                 "<b>TTFT P1</b><br><sub>Lower is better</sub>",
                 "<b>TTFT P50</b><br><sub>Lower is better</sub>",
                 "<b>TTFT P90</b><br><sub>Lower is better</sub>",
@@ -1118,8 +1126,8 @@ class BenchmarkProcessor:
                 "<b>E2E Latency P90</b><br><sub>Lower is better</sub>",
                 "<b>E2E Latency P99</b><br><sub>Lower is better</sub>",
             ]
-            total_rows = 6
-            row_heights = None
+            total_rows = 8
+            row_heights = [1.2, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
         fig = make_subplots(
             rows=total_rows,
@@ -1132,7 +1140,25 @@ class BenchmarkProcessor:
         )
 
         # Filter data for the model
-        filtered_data = self.filter_data_for_config(all_data, model_config)
+        filtered_data = self.filter_data_for_config(all_data, model_config).copy()
+        if not filtered_data.empty:
+            for column in [
+                "output_tok/sec",
+                "intended concurrency",
+                "TP",
+                "replicas",
+                "request_latency_median",
+            ]:
+                filtered_data[column] = pd.to_numeric(
+                    filtered_data[column], errors="coerce"
+                )
+            gpu_count = filtered_data["TP"] * filtered_data["replicas"]
+            filtered_data["throughput_per_gpu"] = filtered_data["output_tok/sec"] / (
+                gpu_count.replace(0, pd.NA)
+            )
+            filtered_data["throughput_per_concurrency"] = filtered_data[
+                "output_tok/sec"
+            ] / filtered_data["intended concurrency"].replace(0, pd.NA)
 
         # Collect all configurations for consistent coloring
         all_configs = set()
@@ -1157,38 +1183,38 @@ class BenchmarkProcessor:
         if has_ttft_distribution:
             plot_positions = [
                 (1, 1, "output_tok/sec", "Concurrency", "Output tok/s"),
-                (3, 1, "ttft_p1", "Concurrency", "P1 (ms)"),
-                (3, 2, "ttft_median", "Concurrency", "P50 (ms)"),
-                (3, 3, "ttft_p90", "Concurrency", "P90 (ms)"),
-                (4, 1, "ttft_p99", "Concurrency", "P99 (ms)"),
-                (4, 2, "ttft_p99_p50_ratio", "Concurrency", "P99/P50 Ratio"),
-                (5, 1, "tpot_median", "Concurrency", "P50 (ms)"),
-                (5, 2, "tpot_p90", "Concurrency", "P90 (ms)"),
-                (5, 3, "tpot_p99", "Concurrency", "P99 (ms)"),
-                (6, 1, "itl_median", "Concurrency", "P50 (ms)"),
-                (6, 2, "itl_p90", "Concurrency", "P90 (ms)"),
-                (6, 3, "itl_p99", "Concurrency", "P99 (ms)"),
-                (7, 1, "request_latency_median", "Concurrency", "P50 (s)"),
-                (7, 2, "request_latency_p90", "Concurrency", "P90 (s)"),
-                (7, 3, "request_latency_p99", "Concurrency", "P99 (s)"),
+                (5, 1, "ttft_p1", "Concurrency", "P1 (ms)"),
+                (5, 2, "ttft_median", "Concurrency", "P50 (ms)"),
+                (5, 3, "ttft_p90", "Concurrency", "P90 (ms)"),
+                (6, 1, "ttft_p99", "Concurrency", "P99 (ms)"),
+                (6, 2, "ttft_p99_p50_ratio", "Concurrency", "P99/P50 Ratio"),
+                (7, 1, "tpot_median", "Concurrency", "P50 (ms)"),
+                (7, 2, "tpot_p90", "Concurrency", "P90 (ms)"),
+                (7, 3, "tpot_p99", "Concurrency", "P99 (ms)"),
+                (8, 1, "itl_median", "Concurrency", "P50 (ms)"),
+                (8, 2, "itl_p90", "Concurrency", "P90 (ms)"),
+                (8, 3, "itl_p99", "Concurrency", "P99 (ms)"),
+                (9, 1, "request_latency_median", "Concurrency", "P50 (s)"),
+                (9, 2, "request_latency_p90", "Concurrency", "P90 (s)"),
+                (9, 3, "request_latency_p99", "Concurrency", "P99 (s)"),
             ]
         else:
             plot_positions = [
                 (1, 1, "output_tok/sec", "Concurrency", "Output tok/s"),
-                (2, 1, "ttft_p1", "Concurrency", "P1 (ms)"),
-                (2, 2, "ttft_median", "Concurrency", "P50 (ms)"),
-                (2, 3, "ttft_p90", "Concurrency", "P90 (ms)"),
-                (3, 1, "ttft_p99", "Concurrency", "P99 (ms)"),
-                (3, 2, "ttft_p99_p50_ratio", "Concurrency", "P99/P50 Ratio"),
-                (4, 1, "tpot_median", "Concurrency", "P50 (ms)"),
-                (4, 2, "tpot_p90", "Concurrency", "P90 (ms)"),
-                (4, 3, "tpot_p99", "Concurrency", "P99 (ms)"),
-                (5, 1, "itl_median", "Concurrency", "P50 (ms)"),
-                (5, 2, "itl_p90", "Concurrency", "P90 (ms)"),
-                (5, 3, "itl_p99", "Concurrency", "P99 (ms)"),
-                (6, 1, "request_latency_median", "Concurrency", "P50 (s)"),
-                (6, 2, "request_latency_p90", "Concurrency", "P90 (s)"),
-                (6, 3, "request_latency_p99", "Concurrency", "P99 (s)"),
+                (4, 1, "ttft_p1", "Concurrency", "P1 (ms)"),
+                (4, 2, "ttft_median", "Concurrency", "P50 (ms)"),
+                (4, 3, "ttft_p90", "Concurrency", "P90 (ms)"),
+                (5, 1, "ttft_p99", "Concurrency", "P99 (ms)"),
+                (5, 2, "ttft_p99_p50_ratio", "Concurrency", "P99/P50 Ratio"),
+                (6, 1, "tpot_median", "Concurrency", "P50 (ms)"),
+                (6, 2, "tpot_p90", "Concurrency", "P90 (ms)"),
+                (6, 3, "tpot_p99", "Concurrency", "P99 (ms)"),
+                (7, 1, "itl_median", "Concurrency", "P50 (ms)"),
+                (7, 2, "itl_p90", "Concurrency", "P90 (ms)"),
+                (7, 3, "itl_p99", "Concurrency", "P99 (ms)"),
+                (8, 1, "request_latency_median", "Concurrency", "P50 (s)"),
+                (8, 2, "request_latency_p90", "Concurrency", "P90 (s)"),
+                (8, 3, "request_latency_p99", "Concurrency", "P99 (s)"),
             ]
 
         # Plot each metric
@@ -1228,6 +1254,61 @@ class BenchmarkProcessor:
                     col=col,
                 )
 
+        if not filtered_data.empty:
+            efficiency_data = filtered_data.dropna(
+                subset=["throughput_per_gpu", "throughput_per_concurrency"]
+            ).sort_values(by="intended concurrency")
+            for group_key, group_data in efficiency_data.groupby(
+                ["accelerator", "version", "TP", "replicas"]
+            ):
+                accelerator, version, tp, replicas = group_key
+                label = f"{accelerator} | {version} | TP={int(tp)} | R={int(replicas)}"
+                color = config_to_color[label]
+                marker = config_to_marker[label]
+                fig.add_trace(
+                    go.Scatter(
+                        x=group_data["throughput_per_concurrency"],
+                        y=group_data["throughput_per_gpu"],
+                        mode="lines+markers",
+                        name=label,
+                        line=dict(color=color, width=2),
+                        marker=dict(
+                            size=8, symbol=marker, line=dict(width=1, color="white")
+                        ),
+                        showlegend=False,
+                        legendgroup=label,
+                    ),
+                    row=2,
+                    col=1,
+                )
+
+            latency_efficiency_data = filtered_data.dropna(
+                subset=["throughput_per_gpu", "request_latency_median"]
+            ).sort_values(by="request_latency_median")
+            for group_key, group_data in latency_efficiency_data.groupby(
+                ["accelerator", "version", "TP", "replicas"]
+            ):
+                accelerator, version, tp, replicas = group_key
+                label = f"{accelerator} | {version} | TP={int(tp)} | R={int(replicas)}"
+                color = config_to_color[label]
+                marker = config_to_marker[label]
+                fig.add_trace(
+                    go.Scatter(
+                        x=group_data["request_latency_median"],
+                        y=group_data["throughput_per_gpu"],
+                        mode="lines+markers",
+                        name=label,
+                        line=dict(color=color, width=2),
+                        marker=dict(
+                            size=8, symbol=marker, line=dict(width=1, color="white")
+                        ),
+                        showlegend=False,
+                        legendgroup=label,
+                    ),
+                    row=3,
+                    col=1,
+                )
+
         if has_ttft_distribution:
             distribution_data = self.ttft_distribution_df.copy()
             distribution_data["intended concurrency"] = distribution_data[
@@ -1256,51 +1337,75 @@ class BenchmarkProcessor:
                             size=4,
                             line=dict(width=0),
                         ),
-                        boxpoints="all",
+                        boxpoints="outliers",
                         pointpos=0,
                         jitter=0.28,
                         whiskerwidth=0.6,
                     ),
-                    row=2,
+                    row=4,
                     col=1,
                 )
 
         if has_ttft_distribution:
             axis_labels = [
                 (1, 1, "Concurrency", "Output tok/s"),
-                (2, 1, "Concurrency", "TTFT (ms)"),
-                (3, 1, "Concurrency", "P1 (ms)"),
-                (3, 2, "Concurrency", "P50 (ms)"),
-                (3, 3, "Concurrency", "P90 (ms)"),
-                (4, 1, "Concurrency", "P99 (ms)"),
-                (4, 2, "Concurrency", "P99/P50 Ratio"),
-                (5, 1, "Concurrency", "P50 (ms)"),
-                (5, 2, "Concurrency", "P90 (ms)"),
-                (5, 3, "Concurrency", "P99 (ms)"),
-                (6, 1, "Concurrency", "P50 (ms)"),
-                (6, 2, "Concurrency", "P90 (ms)"),
-                (6, 3, "Concurrency", "P99 (ms)"),
-                (7, 1, "Concurrency", "P50 (s)"),
-                (7, 2, "Concurrency", "P90 (s)"),
-                (7, 3, "Concurrency", "P99 (s)"),
+                (
+                    2,
+                    1,
+                    "Interactivity (toks/s/concurrency)",
+                    "Output throughput per GPU (toks/s/gpu)",
+                ),
+                (
+                    3,
+                    1,
+                    "End-to-end latency (s)",
+                    "Token throughput per GPU (toks/s/gpu)",
+                ),
+                (4, 1, "Concurrency", "TTFT (ms)"),
+                (5, 1, "Concurrency", "P1 (ms)"),
+                (5, 2, "Concurrency", "P50 (ms)"),
+                (5, 3, "Concurrency", "P90 (ms)"),
+                (6, 1, "Concurrency", "P99 (ms)"),
+                (6, 2, "Concurrency", "P99/P50 Ratio"),
+                (7, 1, "Concurrency", "P50 (ms)"),
+                (7, 2, "Concurrency", "P90 (ms)"),
+                (7, 3, "Concurrency", "P99 (ms)"),
+                (8, 1, "Concurrency", "P50 (ms)"),
+                (8, 2, "Concurrency", "P90 (ms)"),
+                (8, 3, "Concurrency", "P99 (ms)"),
+                (9, 1, "Concurrency", "P50 (s)"),
+                (9, 2, "Concurrency", "P90 (s)"),
+                (9, 3, "Concurrency", "P99 (s)"),
             ]
         else:
             axis_labels = [
                 (1, 1, "Concurrency", "Output tok/s"),
-                (2, 1, "Concurrency", "P1 (ms)"),
-                (2, 2, "Concurrency", "P50 (ms)"),
-                (2, 3, "Concurrency", "P90 (ms)"),
-                (3, 1, "Concurrency", "P99 (ms)"),
-                (3, 2, "Concurrency", "P99/P50 Ratio"),
-                (4, 1, "Concurrency", "P50 (ms)"),
-                (4, 2, "Concurrency", "P90 (ms)"),
-                (4, 3, "Concurrency", "P99 (ms)"),
-                (5, 1, "Concurrency", "P50 (ms)"),
-                (5, 2, "Concurrency", "P90 (ms)"),
-                (5, 3, "Concurrency", "P99 (ms)"),
-                (6, 1, "Concurrency", "P50 (s)"),
-                (6, 2, "Concurrency", "P90 (s)"),
-                (6, 3, "Concurrency", "P99 (s)"),
+                (
+                    2,
+                    1,
+                    "Interactivity (toks/s/concurrency)",
+                    "Output throughput per GPU (toks/s/gpu)",
+                ),
+                (
+                    3,
+                    1,
+                    "End-to-end latency (s)",
+                    "Token throughput per GPU (toks/s/gpu)",
+                ),
+                (4, 1, "Concurrency", "P1 (ms)"),
+                (4, 2, "Concurrency", "P50 (ms)"),
+                (4, 3, "Concurrency", "P90 (ms)"),
+                (5, 1, "Concurrency", "P99 (ms)"),
+                (5, 2, "Concurrency", "P99/P50 Ratio"),
+                (6, 1, "Concurrency", "P50 (ms)"),
+                (6, 2, "Concurrency", "P90 (ms)"),
+                (6, 3, "Concurrency", "P99 (ms)"),
+                (7, 1, "Concurrency", "P50 (ms)"),
+                (7, 2, "Concurrency", "P90 (ms)"),
+                (7, 3, "Concurrency", "P99 (ms)"),
+                (8, 1, "Concurrency", "P50 (s)"),
+                (8, 2, "Concurrency", "P90 (s)"),
+                (8, 3, "Concurrency", "P99 (s)"),
             ]
 
         for row, col, x_label, y_label in axis_labels:
@@ -1424,17 +1529,17 @@ class BenchmarkProcessor:
         # Add centered section titles as separators between metric groups.
         if has_ttft_distribution:
             annotations = [
-                _section_divider("<b>— Time To First Token (TTFT) —</b>", 1, 2),
-                _section_divider("<b>— Time Per Output Token (TPOT) —</b>", 4, 5),
-                _section_divider("<b>— Inter-Token Latency (ITL) —</b>", 5, 6),
-                _section_divider("<b>— End-to-End Request Latency —</b>", 6, 7),
+                _section_divider("<b>— Time To First Token (TTFT) —</b>", 3, 4),
+                _section_divider("<b>— Time Per Output Token (TPOT) —</b>", 6, 7),
+                _section_divider("<b>— Inter-Token Latency (ITL) —</b>", 7, 8),
+                _section_divider("<b>— End-to-End Request Latency —</b>", 8, 9),
             ]
         else:
             annotations = [
-                _section_divider("<b>— Time To First Token (TTFT) —</b>", 1, 2),
-                _section_divider("<b>— Time Per Output Token (TPOT) —</b>", 3, 4),
-                _section_divider("<b>— Inter-Token Latency (ITL) —</b>", 4, 5),
-                _section_divider("<b>— End-to-End Request Latency —</b>", 5, 6),
+                _section_divider("<b>— Time To First Token (TTFT) —</b>", 3, 4),
+                _section_divider("<b>— Time Per Output Token (TPOT) —</b>", 5, 6),
+                _section_divider("<b>— Inter-Token Latency (ITL) —</b>", 6, 7),
+                _section_divider("<b>— End-to-End Request Latency —</b>", 7, 8),
             ]
 
         fig.update_layout(annotations=list(fig.layout.annotations) + annotations)
@@ -1566,7 +1671,7 @@ class BenchmarkProcessor:
 """
         Path(self.output_html).write_text(full_html, encoding="utf-8")
         logger.info(f"Report saved to {self.output_html}")
-        total_plots = 16 if has_ttft_distribution else 15
+        total_plots = 18 if has_ttft_distribution else 17
         logger.info(
             f"Report contains {total_rows} rows × 3 columns with {total_plots} total plots"
         )
