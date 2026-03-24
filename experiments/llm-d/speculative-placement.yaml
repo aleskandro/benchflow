@@ -1,0 +1,19 @@
+apiVersion: benchflow.io/v1alpha1
+kind: Experiment
+metadata:
+  name: redhatai-llama-33
+spec:
+  model:
+    name: RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
+  deployment_profile:
+    - llm-d-inference-scheduling
+    - llm-d-precise-prefix-cache
+  benchmark_profile:
+    - guidellm-multi-turn
+  metrics_profile: detailed
+  namespace: benchflow
+  execution:
+    timeout: 8h
+  overrides:
+    images:
+      scheduler: quay.io/vmaroon/llm-d-inference-scheduler:v0.6-speculative
