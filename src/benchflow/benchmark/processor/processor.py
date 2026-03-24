@@ -150,6 +150,110 @@ def _format_summary_values(values: list[Any]) -> str:
     return cleaned[0] if len(cleaned) == 1 else ", ".join(cleaned)
 
 
+def _format_table_number(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+
+    if number.is_integer():
+        return f"{int(number):,}"
+    if abs(number) >= 100:
+        return f"{number:,.1f}"
+    if abs(number) >= 10:
+        return f"{number:,.2f}"
+    return f"{number:,.3f}"
+
+
+def _format_configuration_label(row: pd.Series) -> str:
+    accelerator = str(row.get("accelerator") or "unknown")
+    version = str(row.get("version") or "unknown")
+    tp = _format_table_number(row.get("TP"))
+    replicas = _format_table_number(row.get("replicas"))
+    return (
+        f"{html.escape(accelerator)} | "
+        f"{html.escape(version)} | "
+        f"TP={html.escape(tp)} | "
+        f"R={html.escape(replicas)}"
+    )
+
+
+def _render_comparison_table(filtered_data: pd.DataFrame) -> str:
+    if filtered_data.empty:
+        return ""
+
+    columns = [
+        ("Throughput", "output_tok/sec"),
+        ("TTFT P50 (ms)", "ttft_median"),
+        ("TTFT P90 (ms)", "ttft_p90"),
+        ("TTFT P99 (ms)", "ttft_p99"),
+        ("TPOT P50 (ms)", "tpot_median"),
+        ("TPOT P90 (ms)", "tpot_p90"),
+        ("ITL P50 (ms)", "itl_median"),
+        ("E2E P50 (s)", "request_latency_median"),
+        ("E2E P90 (s)", "request_latency_p90"),
+    ]
+
+    table_df = filtered_data.copy()
+    table_df["version"] = table_df["version"].fillna("unknown").astype(str)
+    table_df["accelerator"] = table_df["accelerator"].fillna("unknown").astype(str)
+    table_df["replicas"] = table_df["replicas"].fillna(1)
+    table_df["TP"] = table_df["TP"].fillna(1)
+    table_df = table_df.sort_values(
+        by=["intended concurrency", "accelerator", "version", "TP", "replicas"]
+    )
+
+    header_cells = "".join(
+        f"<th>{html.escape(label)}</th>"
+        for label, _ in [("Configuration", "")] + columns
+    )
+    table_rows: list[str] = [f"<tr>{header_cells}</tr>"]
+    metric_column_width = (100 - 30) / len(columns)
+    colgroup = (
+        "<colgroup>"
+        "<col style='width: 30%;'>"
+        + "".join(f"<col style='width: {metric_column_width:.3f}%;'>" for _ in columns)
+        + "</colgroup>"
+    )
+
+    for concurrency, group_data in table_df.groupby("intended concurrency", sort=True):
+        table_rows.append(
+            "<tr class='benchflow-report-table-group'>"
+            f"<th colspan='{len(columns) + 1}'>Concurrency {html.escape(_format_table_number(concurrency))}</th>"
+            "</tr>"
+        )
+        for _, row in group_data.iterrows():
+            value_cells = "".join(
+                f"<td>{html.escape(_format_table_number(row.get(metric_key)))}</td>"
+                for _, metric_key in columns
+            )
+            table_rows.append(
+                f"<tr><td>{_format_configuration_label(row)}</td>{value_cells}</tr>"
+            )
+
+    return f"""
+<section class="benchflow-report-table-section">
+  <details class="benchflow-report-table-details">
+    <summary>Raw Comparison Table</summary>
+    <p>Exact benchmark metrics grouped by intended concurrency.</p>
+    <div class="benchflow-report-table-shell">
+      <table class="benchflow-report-table">
+        {colgroup}
+        <thead>
+          {table_rows[0]}
+        </thead>
+        <tbody>
+          {"".join(table_rows[1:])}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+"""
+
+
 class BenchmarkProcessor:
     """
     Main class for processing benchmark JSON files and generating reports.
@@ -1356,7 +1460,111 @@ class BenchmarkProcessor:
             mirror=True,
         )
 
-        fig.write_html(self.output_html)
+        chart_html = fig.to_html(
+            full_html=False,
+            include_plotlyjs=True,
+            config={"responsive": False},
+        )
+        comparison_table_html = _render_comparison_table(filtered_data)
+        full_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(model_short_name)} Performance Report</title>
+  <style>
+    body {{
+      margin: 0;
+      background: white;
+      color: #1f2a44;
+      font-family: Arial, sans-serif;
+    }}
+    .benchflow-report-shell {{
+      width: {plot_width}px;
+      margin: 0 auto;
+    }}
+    .benchflow-report-shell > div:first-child {{
+      width: {plot_width}px;
+      margin: 0;
+    }}
+    .benchflow-report-shell .plotly-graph-div {{
+      margin: 0;
+    }}
+    .benchflow-report-table-section {{
+      width: 100%;
+      margin: 24px 0 48px;
+    }}
+    .benchflow-report-table-details {{
+      background: white;
+    }}
+    .benchflow-report-table-details summary {{
+      padding: 10px 12px;
+      font-size: 20px;
+      font-weight: 700;
+      cursor: pointer;
+      list-style-position: inside;
+    }}
+    .benchflow-report-table-details[open] summary {{
+      border-bottom: none;
+    }}
+    .benchflow-report-table-section p {{
+      margin: 12px 0 14px;
+      font-size: 12px;
+      text-align: center;
+    }}
+    .benchflow-report-table-shell {{
+      overflow-x: auto;
+      padding: 0 10px 10px;
+    }}
+    .benchflow-report-table {{
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 11px;
+      background: white;
+    }}
+    .benchflow-report-table th,
+    .benchflow-report-table td {{
+      border: 1px solid #1f2a44;
+      padding: 6px 7px;
+      vertical-align: top;
+    }}
+    .benchflow-report-table thead th {{
+      background: #f4f6f8;
+      font-weight: 700;
+      text-align: left;
+    }}
+    .benchflow-report-table th:first-child,
+    .benchflow-report-table td:first-child {{
+      word-break: break-word;
+      white-space: normal;
+    }}
+    .benchflow-report-table tbody td {{
+      text-align: right;
+    }}
+    .benchflow-report-table tbody td:first-child,
+    .benchflow-report-table tbody th {{
+      text-align: left;
+    }}
+    .benchflow-report-table-group th {{
+      background: #eef2f5;
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .benchflow-report-table tbody tr:nth-child(even) td {{
+      background: #fafbfc;
+    }}
+  </style>
+</head>
+<body>
+<div class="benchflow-report-shell">
+{chart_html}
+{comparison_table_html}
+</div>
+</body>
+</html>
+"""
+        Path(self.output_html).write_text(full_html, encoding="utf-8")
         logger.info(f"Report saved to {self.output_html}")
         total_plots = 16 if has_ttft_distribution else 15
         logger.info(
