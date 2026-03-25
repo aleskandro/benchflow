@@ -231,6 +231,13 @@ class OverrideRuntimeSpec:
 
 
 @dataclass(slots=True)
+class OverrideBenchmarkSpec:
+    rates: list[int] | None = None
+    max_seconds: int | None = None
+    max_requests: str | None = None
+
+
+@dataclass(slots=True)
 class OverrideLlmdSpec:
     repo_ref: str | list[str] | None = None
 
@@ -245,6 +252,7 @@ class OverrideSpec:
     images: OverrideImagesSpec = field(default_factory=OverrideImagesSpec)
     scale: OverrideScaleSpec = field(default_factory=OverrideScaleSpec)
     runtime: OverrideRuntimeSpec = field(default_factory=OverrideRuntimeSpec)
+    benchmark: OverrideBenchmarkSpec = field(default_factory=OverrideBenchmarkSpec)
     llm_d: OverrideLlmdSpec = field(default_factory=OverrideLlmdSpec)
     rhoai: OverrideRhoaiSpec = field(default_factory=OverrideRhoaiSpec)
 

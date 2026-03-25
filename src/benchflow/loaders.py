@@ -20,6 +20,7 @@ from .models import (
     MetricsProfileSpec,
     MlflowSpec,
     ModelStorageSpec,
+    OverrideBenchmarkSpec,
     OverrideImagesSpec,
     OverrideLlmdSpec,
     OverrideRhoaiSpec,
@@ -83,11 +84,67 @@ def _int_or_list(raw: Any, field_name: str) -> int | list[int] | None:
         ) from exc
 
 
+def _int_list(raw: Any, field_name: str) -> list[int] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValidationError(f"{field_name} must be an integer or list of integers")
+    if isinstance(raw, int):
+        if raw <= 0:
+            raise ValidationError(f"{field_name} must contain only positive integers")
+        return [raw]
+    if isinstance(raw, list):
+        try:
+            values = [int(item) for item in raw]
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"{field_name} must be a list of integers, got: {raw!r}"
+            ) from exc
+        if not values:
+            raise ValidationError(f"{field_name} must not be an empty list")
+        if any(value <= 0 for value in values):
+            raise ValidationError(f"{field_name} must contain only positive integers")
+        return values
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"{field_name} must be an integer or list of integers, got: {raw!r}"
+        ) from exc
+    if parsed <= 0:
+        raise ValidationError(f"{field_name} must contain only positive integers")
+    return [parsed]
+
+
+def _positive_int(raw: Any, field_name: str) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValidationError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{field_name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValidationError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _nonempty_string(raw: Any, field_name: str) -> str | None:
+    if raw is None:
+        return None
+    cleaned = str(raw).strip()
+    if not cleaned:
+        raise ValidationError(f"{field_name} must not be empty")
+    return cleaned
+
+
 def _overrides_from_dict(raw: dict[str, Any] | None) -> OverrideSpec:
     raw = raw or {}
     images = raw.get("images") or {}
     scale = raw.get("scale") or {}
     runtime = raw.get("runtime") or {}
+    benchmark = raw.get("benchmark") or {}
     llm_d = raw.get("llm_d") or {}
     rhoai = raw.get("rhoai") or {}
 
@@ -115,6 +172,17 @@ def _overrides_from_dict(raw: dict[str, Any] | None) -> OverrideSpec:
                 str(key): str(value)
                 for key, value in (runtime.get("env") or {}).items()
             },
+        ),
+        benchmark=OverrideBenchmarkSpec(
+            rates=_int_list(benchmark.get("rates"), "spec.overrides.benchmark.rates"),
+            max_seconds=_positive_int(
+                benchmark.get("max_seconds"),
+                "spec.overrides.benchmark.max_seconds",
+            ),
+            max_requests=_nonempty_string(
+                benchmark.get("max_requests"),
+                "spec.overrides.benchmark.max_requests",
+            ),
         ),
         llm_d=OverrideLlmdSpec(
             repo_ref=_string_or_list(

@@ -426,15 +426,31 @@ spec:
   backend_type: openai_http # no CLI override
   rate_type: concurrent # no CLI override
   rates:
-    - 1 # no CLI override today
+    - 1 # overridden by spec.overrides.benchmark.rates
   data: prompt_tokens=1000,output_tokens=1000 # no CLI override today
-  max_seconds: 600 # no CLI override today
-  max_requests: null # no CLI override today
+  max_seconds: 600 # overridden by spec.overrides.benchmark.max_seconds
+  max_requests: null # overridden by spec.overrides.benchmark.max_requests
   requirements:
     min_max_model_len: 8192 # no CLI override; raises the resolved deployment max-model-len when needed
   env:
     LOG_LEVEL: INFO # no CLI override today
 ```
+
+Safe benchmark overrides can be applied from the `Experiment` without changing
+the benchmark profile identity:
+
+```yaml
+spec:
+  benchmark_profile: guidellm-multi-turn
+  overrides:
+    benchmark:
+      rates: [128]
+      max_seconds: 180
+      max_requests: 500
+```
+
+`data` is intentionally not overrideable. It is treated as part of what defines
+the benchmark profile itself.
 
 Full `MetricsProfile` schema:
 

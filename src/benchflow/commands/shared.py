@@ -25,6 +25,7 @@ from ..models import (
     Metadata,
     MlflowSpec,
     ModelSpec,
+    OverrideBenchmarkSpec,
     OverrideImagesSpec,
     OverrideLlmdSpec,
     OverrideRhoaiSpec,
@@ -282,6 +283,15 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                 **base_experiment.spec.overrides.runtime.env,
                 **cli_env,
             },
+        ),
+        benchmark=OverrideBenchmarkSpec(
+            rates=(
+                list(base_experiment.spec.overrides.benchmark.rates)
+                if base_experiment.spec.overrides.benchmark.rates is not None
+                else None
+            ),
+            max_seconds=base_experiment.spec.overrides.benchmark.max_seconds,
+            max_requests=base_experiment.spec.overrides.benchmark.max_requests,
         ),
         llm_d=OverrideLlmdSpec(
             repo_ref=(

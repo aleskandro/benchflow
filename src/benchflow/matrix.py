@@ -11,6 +11,7 @@ from .models import (
     Metadata,
     MlflowSpec,
     ModelSpec,
+    OverrideBenchmarkSpec,
     OverrideImagesSpec,
     OverrideLlmdSpec,
     OverrideRhoaiSpec,
@@ -213,6 +214,15 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                         runtime=OverrideRuntimeSpec(
                             vllm_args=list(experiment.spec.overrides.runtime.vllm_args),
                             env=dict(experiment.spec.overrides.runtime.env),
+                        ),
+                        benchmark=OverrideBenchmarkSpec(
+                            rates=(
+                                list(experiment.spec.overrides.benchmark.rates)
+                                if experiment.spec.overrides.benchmark.rates is not None
+                                else None
+                            ),
+                            max_seconds=experiment.spec.overrides.benchmark.max_seconds,
+                            max_requests=experiment.spec.overrides.benchmark.max_requests,
                         ),
                         llm_d=OverrideLlmdSpec(repo_ref=repo_ref),
                         rhoai=OverrideRhoaiSpec(

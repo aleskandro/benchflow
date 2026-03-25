@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .loaders import ProfileCatalog
 from .models import (
     Experiment,
@@ -252,6 +254,14 @@ def resolve_run_plan(
     ):
         options["enable_auth"] = overrides.rhoai.enable_auth
 
+    benchmark = replace(benchmark_profile.spec)
+    if overrides.benchmark.rates is not None:
+        benchmark.rates = list(overrides.benchmark.rates)
+    if overrides.benchmark.max_seconds is not None:
+        benchmark.max_seconds = overrides.benchmark.max_seconds
+    if overrides.benchmark.max_requests is not None:
+        benchmark.max_requests = overrides.benchmark.max_requests
+
     target = _target_for(
         platform=deployment_profile.spec.platform,
         release_name=release_name,
@@ -309,7 +319,7 @@ def resolve_run_plan(
         target_cluster=experiment.spec.target_cluster,
         model=experiment.spec.model.__class__(name=model_name),
         deployment=deployment,
-        benchmark=benchmark_profile.spec,
+        benchmark=benchmark,
         metrics=metrics_profile.spec,
         stages=experiment.spec.stages,
         mlflow=mlflow,
