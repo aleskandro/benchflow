@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
 class ValidationError(ValueError):
     """Raised when a config document is malformed."""
+
+
+_CALL_RANGE_RE = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
 
 
 def _require(value: Any, field_name: str) -> Any:
@@ -26,6 +30,34 @@ def _as_bool(value: Any, default: bool) -> bool:
         if lowered in {"false", "no", "0"}:
             return False
     raise ValidationError(f"invalid boolean value: {value!r}")
+
+
+def normalize_call_ranges(value: Any, field_name: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValidationError(f"{field_name} must not be empty")
+
+    normalized: list[str] = []
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            raise ValidationError(f"{field_name} contains an empty range entry")
+        match = _CALL_RANGE_RE.fullmatch(candidate)
+        if match is None:
+            raise ValidationError(
+                f"{field_name} must contain ranges in start-end format, got: {candidate!r}"
+            )
+        start = int(match.group(1))
+        end = int(match.group(2))
+        if end < start:
+            raise ValidationError(
+                f"{field_name} range end must be greater than or equal to start: {candidate!r}"
+            )
+        normalized.append(f"{start}-{end}")
+
+    if not normalized:
+        raise ValidationError(f"{field_name} must contain at least one range")
+    return ",".join(normalized)
 
 
 def sanitize_name(value: str, max_length: int = 42) -> str:
@@ -130,9 +162,32 @@ class MlflowSpec:
 
 
 @dataclass(slots=True)
+class ProfilingSpec:
+    enabled: bool = False
+    call_ranges: str = "100-150"
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "ProfilingSpec":
+        raw = raw or {}
+        if not isinstance(raw, dict):
+            raise ValidationError("execution.profiling must be a mapping")
+        call_ranges_raw = raw.get("call_ranges")
+        if call_ranges_raw is None and "profiling_ranges" in raw:
+            call_ranges_raw = raw.get("profiling_ranges")
+        return cls(
+            enabled=_as_bool(raw.get("enabled"), False),
+            call_ranges=normalize_call_ranges(
+                call_ranges_raw if call_ranges_raw is not None else "100-150",
+                "execution.profiling.call_ranges",
+            ),
+        )
+
+
+@dataclass(slots=True)
 class ExecutionSpec:
     timeout: str = "3h"
     verify_completions: bool = True
+    profiling: ProfilingSpec = field(default_factory=ProfilingSpec)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "ExecutionSpec":
@@ -143,6 +198,7 @@ class ExecutionSpec:
         return cls(
             timeout=timeout,
             verify_completions=_as_bool(raw.get("verify_completions"), True),
+            profiling=ProfilingSpec.from_dict(raw.get("profiling")),
         )
 
 

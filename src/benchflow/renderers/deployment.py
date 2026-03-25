@@ -5,8 +5,12 @@ from typing import Any
 
 import yaml
 
-from ..assets import render_jinja_yaml_document
-from ..models import ResolvedRunPlan
+from ..assets import asset_text, render_jinja_yaml_document
+from ..models import ResolvedRunPlan, ValidationError
+
+RHOAI_PROFILER_CONFIGMAP_SUFFIX = "vllm-profiler"
+RHOAI_PROFILER_MOUNT_PATH = "/home/vllm/profiler"
+RHOAI_PROFILER_OUTPUT_DIR = "/tmp/benchflow-profiler"
 
 
 def _base_labels(plan: ResolvedRunPlan) -> dict[str, str]:
@@ -16,6 +20,15 @@ def _base_labels(plan: ResolvedRunPlan) -> dict[str, str]:
         "benchflow.io/platform": plan.deployment.platform,
         "benchflow.io/mode": plan.deployment.mode,
     }
+
+
+def _validate_rhoai_profiling(plan: ResolvedRunPlan) -> None:
+    if not plan.execution.profiling.enabled:
+        return
+    if plan.deployment.platform != "rhoai":
+        raise ValidationError(
+            "execution.profiling is currently supported only for rhoai deployments"
+        )
 
 
 def _model_path(plan: ResolvedRunPlan) -> str:
@@ -69,6 +82,7 @@ def _rhoai_vllm_args(plan: ResolvedRunPlan) -> list[str]:
 
 
 def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
+    _validate_rhoai_profiling(plan)
     custom_scheduler_enabled = plan.deployment.mode in {
         "approximate-prefix-cache",
         "precise-prefix-cache",
@@ -91,6 +105,10 @@ def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
             plan.deployment.mode == "approximate-prefix-cache"
         ),
         "precise_prefix_cache_enabled": plan.deployment.mode == "precise-prefix-cache",
+        "profiling_enabled": plan.execution.profiling.enabled,
+        "profiler_call_ranges": plan.execution.profiling.call_ranges,
+        "profiler_configmap_name": rhoai_profiler_configmap_name(plan),
+        "profiler_mount_path": RHOAI_PROFILER_MOUNT_PATH,
     }
 
 
@@ -105,6 +123,29 @@ def render_rhoai_manifest(plan: ResolvedRunPlan) -> dict[str, Any]:
         "deployment/rhoai/llminferenceservice.yaml.j2",
         _rhoai_template_context(plan),
     )
+
+
+def rhoai_profiler_configmap_name(plan: ResolvedRunPlan) -> str:
+    return f"{plan.deployment.release_name}-{RHOAI_PROFILER_CONFIGMAP_SUFFIX}"
+
+
+def render_rhoai_profiler_configmap(plan: ResolvedRunPlan) -> dict[str, Any]:
+    _validate_rhoai_profiling(plan)
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": rhoai_profiler_configmap_name(plan),
+            "namespace": plan.deployment.namespace,
+            "labels": {
+                **_base_labels(plan),
+                "app.kubernetes.io/component": "vllm-profiler",
+            },
+        },
+        "data": {
+            "sitecustomize.py": asset_text("deployment/rhoai/profiler/sitecustomize.py")
+        },
+    }
 
 
 def render_rhaiis_manifests(plan: ResolvedRunPlan) -> list[dict[str, Any]]:
@@ -197,6 +238,13 @@ def write_deployment_assets(plan: ResolvedRunPlan, output_dir: Path) -> list[Pat
         return written
 
     if plan.deployment.platform == "rhoai":
+        if plan.execution.profiling.enabled:
+            profiler_target = output_dir / "vllm-profiler-configmap.yaml"
+            profiler_target.write_text(
+                yaml.safe_dump(render_rhoai_profiler_configmap(plan), sort_keys=False),
+                encoding="utf-8",
+            )
+            written.append(profiler_target)
         target = output_dir / "llminferenceservice.yaml"
         target.write_text(
             yaml.safe_dump(render_rhoai_manifest(plan), sort_keys=False),

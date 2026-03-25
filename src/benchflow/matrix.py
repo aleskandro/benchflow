@@ -17,6 +17,7 @@ from .models import (
     OverrideRuntimeSpec,
     OverrideScaleSpec,
     OverrideSpec,
+    ProfilingSpec,
     ResolvedRunPlan,
     StageSpec,
     ValidationError,
@@ -190,6 +191,10 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                     execution=ExecutionSpec(
                         timeout=experiment.spec.execution.timeout,
                         verify_completions=experiment.spec.execution.verify_completions,
+                        profiling=ProfilingSpec(
+                            enabled=experiment.spec.execution.profiling.enabled,
+                            call_ranges=experiment.spec.execution.profiling.call_ranges,
+                        ),
                     ),
                     target_cluster=ClusterTargetSpec(
                         kubeconfig=experiment.spec.target_cluster.kubeconfig,

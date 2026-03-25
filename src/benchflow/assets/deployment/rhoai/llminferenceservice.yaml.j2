@@ -158,12 +158,25 @@ spec:
           - "--block-size=64"
           - '--kv-events-config={"enable_kv_cache_events": true, "publisher": "zmq", "endpoint": "tcp://{{ release_name }}-epp-service:5557", "topic": "kv@$(POD_IP)@$(MODEL_NAME)"}'
 {% endif %}
-{% if runtime_env or precise_prefix_cache_enabled %}
+{% if runtime_env or precise_prefix_cache_enabled or profiling_enabled %}
         env:
 {% for entry in runtime_env %}
           - name: {{ entry.name }}
             value: {{ entry.value | tojson }}
 {% endfor %}
+{% if profiling_enabled %}
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: PYTHONPATH
+            value: {{ profiler_mount_path | tojson }}
+          - name: VLLM_PROFILER_RANGES
+            value: {{ profiler_call_ranges | tojson }}
+          - name: VLLM_PROFILER_OUTPUT_DIR
+            value: "/tmp/benchflow-profiler"
+{% endif %}
 {% if precise_prefix_cache_enabled %}
           - name: POD_IP
             valueFrom:
@@ -175,4 +188,16 @@ spec:
           - name: PYTHONHASHSEED
             value: "42"
 {% endif %}
+{% endif %}
+{% if profiling_enabled %}
+        volumeMounts:
+          - mountPath: {{ profiler_mount_path | tojson }}
+            name: vllm-profiler
+            readOnly: true
+{% endif %}
+{% if profiling_enabled %}
+    volumes:
+      - name: vllm-profiler
+        configMap:
+          name: {{ profiler_configmap_name | tojson }}
 {% endif %}

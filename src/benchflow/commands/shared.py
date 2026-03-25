@@ -31,6 +31,7 @@ from ..models import (
     OverrideRuntimeSpec,
     OverrideScaleSpec,
     OverrideSpec,
+    ProfilingSpec,
     StageSpec,
     ValidationError,
     normalize_model_names,
@@ -332,6 +333,10 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                     bool(getattr(args, "verify_completions"))
                     if getattr(args, "verify_completions", None) is not None
                     else base_experiment.spec.execution.verify_completions
+                ),
+                profiling=ProfilingSpec(
+                    enabled=base_experiment.spec.execution.profiling.enabled,
+                    call_ranges=base_experiment.spec.execution.profiling.call_ranges,
                 ),
             ),
             target_cluster=ClusterTargetSpec(

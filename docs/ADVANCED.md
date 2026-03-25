@@ -19,6 +19,7 @@ work and should be treated as an unsupported placeholder.
 - [Monitoring and Results](#monitoring-and-results)
 - [Local Metrics Viewer](#local-metrics-viewer)
 - [Comparison Reports](#comparison-reports)
+- [RHOAI Profiling](#rhoai-profiling)
 - [Current Assumptions](#current-assumptions)
 - [Troubleshooting](#troubleshooting)
 
@@ -925,6 +926,62 @@ bflow benchmark report \
   --version-override llm-d-v0.4.0=llm-d-0.4 \
   --output-dir ./reports
 ```
+
+## RHOAI Profiling
+
+BenchFlow includes a narrow RHOAI-only worker profiling path inspired by:
+
+- `mnmehta/vllm-profiler`: https://github.com/mnmehta/vllm-profiler
+
+BenchFlow does not install that repository directly. Instead, it injects a
+small BenchFlow-owned `sitecustomize.py` payload into the RHOAI runtime worker
+pod and hooks `vllm.v1.worker.gpu_worker.Worker.execute_model`.
+
+Enable it in the `Experiment`:
+
+```yaml
+spec:
+  execution:
+    profiling:
+      enabled: true
+      call_ranges: "100-150"
+```
+
+`call_ranges` are per-process `Worker.execute_model` invocation windows, not
+wall-clock windows and not GuideLLM concurrency phases. BenchFlow starts
+profiling when a worker process reaches the beginning of a configured range and
+exports results after that process completes the final call in the range.
+
+BenchFlow fixes the rest of the profiler contract intentionally:
+
+- activities are always `CPU,CUDA`
+- Chrome trace export is always enabled
+- a text summary table is also exported for each captured range
+- artifacts are written under `/tmp/benchflow-profiler` inside the worker pod
+- collected profiler artifacts are uploaded with the rest of the execution
+  artifacts under `profiling/`
+- every RHOAI worker pod receives the same profiler injection when profiling is
+  enabled
+
+This path works best when you run a benchmark with a single intended
+concurrency. If you want to inspect a specific concurrency, create or reuse a
+benchmark profile that runs only that concurrency and then use `call_ranges` to
+capture a steady-state window within that run.
+
+Current limitations:
+
+- RHOAI only
+- runtime worker profiling only; scheduler/EPP pods are not profiled
+- all worker pods are profiled with the same call windows; BenchFlow does not
+  currently let you target only one replica
+- call windows apply independently in each worker process, including multi-rank
+  worker pods
+- range selection is based on local `execute_model` call counts, not time,
+  benchmark stage, or global request ordering
+- no compare or merge workflow for multiple trace captures yet
+
+If profiling is enabled on a non-RHOAI deployment, BenchFlow fails fast during
+RunPlan resolution.
 
 ## Current Assumptions
 

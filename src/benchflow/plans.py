@@ -19,6 +19,15 @@ _MATRIX_CHILD_INDEX_LABEL = "benchflow.io/matrix-child-index"
 _MAX_MODEL_LEN_FLAG = "--max-model-len"
 
 
+def _validate_profiling_support(*, platform: str, profiling_enabled: bool) -> None:
+    if not profiling_enabled:
+        return
+    if platform != "rhoai":
+        raise ValidationError(
+            "execution.profiling is currently supported only for the rhoai platform"
+        )
+
+
 def _release_name_for(experiment: Experiment) -> str:
     child_index = str(
         (experiment.metadata.labels or {}).get(_MATRIX_CHILD_INDEX_LABEL) or ""
@@ -213,6 +222,10 @@ def resolve_run_plan(
             **deployment_profile.spec.runtime.env,
             **experiment.spec.overrides.runtime.env,
         },
+    )
+    _validate_profiling_support(
+        platform=deployment_profile.spec.platform,
+        profiling_enabled=experiment.spec.execution.profiling.enabled,
     )
 
     repo_ref = deployment_profile.spec.repo_ref

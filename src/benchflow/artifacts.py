@@ -8,6 +8,8 @@ from .cluster import CommandError, require_any_command, run_command, run_json_co
 from .models import ResolvedRunPlan
 from .ui import detail, step, success
 
+RHOAI_PROFILER_OUTPUT_DIR = "/tmp/benchflow-profiler"
+
 
 def _pod_type(pod_name: str) -> str:
     lowered = pod_name.lower()
@@ -66,8 +68,60 @@ def _ensure_artifact_layout(artifacts_dir: Path) -> None:
         "logs/gaie",
         "logs/infra",
         "manifests",
+        "profiling",
     ):
         (artifacts_dir / relative).mkdir(parents=True, exist_ok=True)
+
+
+def _collect_profiling_artifacts(
+    kubectl_cmd: str,
+    namespace: str,
+    pod_name: str,
+    artifacts_dir: Path,
+) -> int:
+    probe = run_command(
+        [
+            kubectl_cmd,
+            "exec",
+            pod_name,
+            "-c",
+            "main",
+            "-n",
+            namespace,
+            "--",
+            "sh",
+            "-lc",
+            (
+                f"test -d {RHOAI_PROFILER_OUTPUT_DIR} && "
+                f"find {RHOAI_PROFILER_OUTPUT_DIR} -maxdepth 1 -type f | head -n 1"
+            ),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return 0
+
+    target_dir = artifacts_dir / "profiling" / pod_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copy_result = run_command(
+        [
+            kubectl_cmd,
+            "cp",
+            "-c",
+            "main",
+            "-n",
+            namespace,
+            f"{pod_name}:{RHOAI_PROFILER_OUTPUT_DIR}/.",
+            str(target_dir),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if copy_result.returncode != 0:
+        detail(f"Failed to copy profiling artifacts from pod {pod_name}")
+        return 0
+    return sum(1 for path in target_dir.rglob("*") if path.is_file())
 
 
 def collect_execution_logs(
@@ -168,6 +222,7 @@ def collect_artifacts(
     model_count = 0
     gaie_count = 0
     infra_count = 0
+    model_pod_names: list[str] = []
     if include_workload:
         payload = run_json_command(
             [kubectl_cmd, "get", "pods", "-n", namespace, "-o", "json"]
@@ -177,6 +232,8 @@ def collect_artifacts(
             if not pod_name or pod_name.endswith("-pod") or pod_name in execution_pods:
                 continue
             pod_type = _pod_type(pod_name)
+            if pod_type == "model":
+                model_pod_names.append(pod_name)
             if _collect_pod_logs(
                 kubectl_cmd, namespace, pod_name, artifacts_dir / "logs" / pod_type
             ):
@@ -189,6 +246,30 @@ def collect_artifacts(
         detail(
             f"Collected workload logs from {model_count} model pod(s), "
             f"{gaie_count} gaie pod(s), and {infra_count} infra pod(s)"
+        )
+
+    profiling_pods: list[str] = []
+    profiling_file_count = 0
+    if (
+        include_workload
+        and plan.deployment.platform == "rhoai"
+        and plan.execution.profiling.enabled
+        and model_pod_names
+    ):
+        for pod_name in sorted(model_pod_names):
+            collected = _collect_profiling_artifacts(
+                kubectl_cmd,
+                namespace,
+                pod_name,
+                artifacts_dir,
+            )
+            if collected <= 0:
+                continue
+            profiling_pods.append(pod_name)
+            profiling_file_count += collected
+        detail(
+            f"Collected {profiling_file_count} profiling artifact file(s) "
+            f"from {len(profiling_pods)} pod(s)"
         )
 
     manifest_root = artifacts_dir / "manifests"
@@ -250,6 +331,8 @@ def collect_artifacts(
         "model_pods": model_count,
         "gaie_pods": gaie_count,
         "infra_pods": infra_count,
+        "profiling_pods": profiling_pods,
+        "profiling_files": profiling_file_count,
         "manifest_files": manifest_count,
         "timestamp": datetime.now(timezone.utc)
         .replace(microsecond=0)

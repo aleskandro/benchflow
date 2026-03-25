@@ -7,7 +7,10 @@ import yaml
 
 from ..cluster import CommandError, require_any_command, run_command, run_json_command
 from ..models import ResolvedRunPlan
-from ..renderers.deployment import render_rhoai_manifest
+from ..renderers.deployment import (
+    render_rhoai_manifest,
+    render_rhoai_profiler_configmap,
+)
 from ..ui import detail, step, success
 
 
@@ -27,6 +30,10 @@ def _deployment_exists(namespace: str, release_name: str, kubectl_cmd: str) -> b
         check=False,
     )
     return result.returncode == 0
+
+
+def _profiling_enabled(plan: ResolvedRunPlan) -> bool:
+    return plan.execution.profiling.enabled
 
 
 def _status_snapshot(payload: dict[str, object]) -> tuple[bool, str, str]:
@@ -224,12 +231,32 @@ def deploy_rhoai(
         success(f"Skipping deploy; LLMInferenceService {release_name} already exists")
         return manifests_dir.resolve() if manifests_dir else Path.cwd()
 
+    profiler_configmap = (
+        render_rhoai_profiler_configmap(plan) if _profiling_enabled(plan) else None
+    )
     manifest = render_rhoai_manifest(plan)
     if manifests_dir is not None:
         manifests_dir.mkdir(parents=True, exist_ok=True)
+        if profiler_configmap is not None:
+            profiler_target = manifests_dir / "vllm-profiler-configmap.yaml"
+            profiler_target.write_text(
+                yaml.safe_dump(profiler_configmap, sort_keys=False), encoding="utf-8"
+            )
+            detail(f"Rendered profiler ConfigMap written to {profiler_target}")
         target = manifests_dir / "llminferenceservice.yaml"
         target.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
         detail(f"Rendered RHOAI manifest written to {target}")
+
+    if profiler_configmap is not None:
+        configmap_name = str(
+            profiler_configmap.get("metadata", {}).get("name") or "vllm-profiler"
+        )
+        step(f"Applying profiler ConfigMap {configmap_name} in namespace {namespace}")
+        run_command(
+            [kubectl_cmd, "apply", "-f", "-"],
+            input_text=yaml.safe_dump(profiler_configmap, sort_keys=False),
+        )
+        success(f"Applied profiler ConfigMap {configmap_name} in namespace {namespace}")
 
     step(
         f"Applying RHOAI {plan.deployment.mode} deployment {release_name} "
