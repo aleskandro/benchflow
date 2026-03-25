@@ -6,3 +6,4 @@ config/cluster/secrets/*
 *.pyc
 dist/
 generated/
+*.html
