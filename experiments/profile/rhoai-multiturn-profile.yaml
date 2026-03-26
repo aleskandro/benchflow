@@ -1,0 +1,27 @@
+apiVersion: benchflow.io/v1alpha1
+kind: Experiment
+metadata:
+  name: rhoai-multiturn-profile
+spec:
+  model:
+    name:
+      - RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
+  deployment_profile:
+    - rhoai-kserve
+    - rhoai-approximate-prefix-cache
+  benchmark_profile:
+    - guidellm-multi-turn
+  overrides:
+    benchmark:
+      rates: [256]
+  metrics_profile: detailed
+  mlflow:
+    version: "RHOAI-3.4-EA1"
+    tags:
+      accelerator: H200
+  namespace: benchflow
+  execution:
+    profiling:
+      enabled: true
+      call_ranges: "200-210"
+    timeout: 8h
