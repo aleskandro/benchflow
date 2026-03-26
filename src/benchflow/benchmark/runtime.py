@@ -36,6 +36,25 @@ log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 configure_logging(log_level)
 logger = logging.getLogger(__name__)
 
+NON_DATA_PROFILE_PARAMS = {
+    "target",
+    "model",
+    "backend_type",
+    "request_type",
+    "rate_type",
+    "rates",
+    "tp",
+    "replicas",
+    "prefill_replicas",
+    "decode_replicas",
+    "multiturn_mode",
+    "max_seconds",
+    "max_requests",
+    "processor",
+    "accelerator",
+    "version",
+}
+
 
 class BenchmarkExecutionError(RuntimeError):
     def __init__(self, message: str, *, run_id: str = "") -> None:
@@ -160,6 +179,49 @@ def parse_multiturn_data_param(data: str, concurrency: int) -> str:
             parts.append(part.strip())
 
     return ",".join(parts)
+
+
+def _coerce_profile_value(raw: Any) -> Any:
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if not cleaned:
+            return cleaned
+        try:
+            return int(cleaned)
+        except ValueError:
+            try:
+                return float(cleaned)
+            except ValueError:
+                return cleaned
+    return raw
+
+
+def _extract_data_profile_params(params: dict[str, Any]) -> dict[str, Any]:
+    preferred_order = [
+        "prompt_tokens",
+        "prompt_tokens_stdev",
+        "prompt_tokens_min",
+        "prompt_tokens_max",
+        "output_tokens",
+        "output_tokens_stdev",
+        "output_tokens_min",
+        "output_tokens_max",
+        "turns",
+        "prefix_tokens",
+        "prefix_count",
+    ]
+    extracted = {
+        key: _coerce_profile_value(value)
+        for key, value in params.items()
+        if key not in NON_DATA_PROFILE_PARAMS and value is not None
+    }
+    ordered: dict[str, Any] = {}
+    for key in preferred_order:
+        if key in extracted:
+            ordered[key] = extracted.pop(key)
+    for key in sorted(extracted):
+        ordered[key] = extracted[key]
+    return ordered
 
 
 def _has_multiturn_expression(value: Any) -> bool:
@@ -1178,18 +1240,7 @@ def validate_runs_compatibility(runs_data: list) -> tuple:
     model = first_run["params"].get("model")
     rate = first_run["params"].get("rates")
 
-    # Data profile parameters (may or may not be present)
-    data_profile_params = [
-        "prompt_tokens",
-        "output_tokens",
-        "turns",
-        "prefix_tokens",
-        "prefix_count",
-    ]
-
-    first_profile = {
-        param: first_run["params"].get(param) for param in data_profile_params
-    }
+    first_profile = _extract_data_profile_params(first_run["params"])
 
     # Validate all runs have same configuration
     for run_data in runs_data[1:]:
@@ -1207,20 +1258,25 @@ def validate_runs_compatibility(runs_data: list) -> tuple:
                 f"All runs must use the same rate configuration."
             )
 
-        # Check each data profile parameter
-        for param in data_profile_params:
-            if params.get(param) != first_profile[param]:
-                raise ValueError(
-                    f"Data profile mismatch: {param}={params.get(param)} != {first_profile[param]}. "
-                    f"All runs must use the same data profile."
-                )
+        current_profile = _extract_data_profile_params(params)
+        if current_profile != first_profile:
+            all_keys = sorted(set(first_profile) | set(current_profile))
+            mismatch_parts = [
+                f"{key}={current_profile.get(key)} != {first_profile.get(key)}"
+                for key in all_keys
+                if current_profile.get(key) != first_profile.get(key)
+            ]
+            raise ValueError(
+                "Data profile mismatch: "
+                + "; ".join(mismatch_parts)
+                + ". All runs must use the same data profile."
+            )
 
-    # Build data profile string from present parameters only
-    profile_parts = []
-    for param in data_profile_params:
-        value = first_profile[param]
-        if value is not None:
-            profile_parts.append(f"{param}={value}")
+    profile_parts = [
+        f"{param}={value}"
+        for param, value in first_profile.items()
+        if value is not None
+    ]
 
     data_profile = ",".join(profile_parts) if profile_parts else None
 
@@ -1267,22 +1323,9 @@ def generate_plot_only_report(
     # Validate runs compatibility
     model, rate, data_profile = validate_runs_compatibility(runs_data)
 
-    # Extract data profile parameters from first run
+    # Extract full data profile parameters from first run
     first_run_params = runs_data[0]["params"]
-    data_profile_params = {
-        "prompt_tokens": first_run_params.get("prompt_tokens"),
-        "output_tokens": first_run_params.get("output_tokens"),
-        "turns": first_run_params.get("turns"),
-        "prefix_tokens": first_run_params.get("prefix_tokens"),
-        "prefix_count": first_run_params.get("prefix_count"),
-    }
-    # Convert string values to int if present
-    for key, value in data_profile_params.items():
-        if value is not None:
-            try:
-                data_profile_params[key] = int(value)
-            except (ValueError, TypeError):
-                pass  # Keep as is if conversion fails
+    data_profile_params = _extract_data_profile_params(first_run_params)
 
     # Filter runs by version if specified (using prefix match for MLflow runs)
     if versions:
@@ -1335,7 +1378,7 @@ def generate_plot_only_report(
         tp_size=1,
         runtime_args="",
         replicas=1,  # dummy value
-        **data_profile_params,  # Pass data profile parameters
+        data_profile=data_profile_params,
     )
     consolidated_df = temp_processor.download_s3_csv()
     logger.info(f"Downloaded consolidated CSV with {len(consolidated_df)} rows")
@@ -1388,7 +1431,7 @@ def generate_plot_only_report(
             tp_size=tp_size,
             runtime_args="",
             replicas=replicas_int,
-            **data_profile_params,  # Pass data profile parameters
+            data_profile=data_profile_params,
         )
 
         # Parse this run's JSON to DataFrame (replicas will be included via processor)
@@ -1516,7 +1559,7 @@ def generate_plot_only_report(
         runtime_args="",
         compare_versions=compare_versions,
         output_html=html_path,
-        **data_profile_params,  # Pass data profile parameters
+        data_profile=data_profile_params,
     )
 
     # Override with our merged and filtered data

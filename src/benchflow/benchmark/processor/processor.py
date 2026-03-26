@@ -20,6 +20,20 @@ from ...ui import configure_logging
 configure_logging("INFO")
 logger = logging.getLogger("benchmark_processor")
 
+DATA_PROFILE_PREFERRED_ORDER = [
+    "prompt_tokens",
+    "prompt_tokens_stdev",
+    "prompt_tokens_min",
+    "prompt_tokens_max",
+    "output_tokens",
+    "output_tokens_stdev",
+    "output_tokens_min",
+    "output_tokens_max",
+    "turns",
+    "prefix_tokens",
+    "prefix_count",
+]
+
 
 def _get_nested(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     """Safely get a nested value from a dictionary."""
@@ -30,10 +44,23 @@ def _get_nested(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     return d
 
 
-def _parse_request_data(requests_data: Any) -> Dict[str, int]:
-    """Parse request data to extract prompt and output tokens."""
-    prompt_tokens = 0
-    output_tokens = 0
+def _coerce_data_profile_value(raw: Any) -> Any:
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if not cleaned:
+            return cleaned
+        try:
+            return int(cleaned)
+        except ValueError:
+            try:
+                return float(cleaned)
+            except ValueError:
+                return cleaned
+    return raw
+
+
+def _parse_request_profile(requests_data: Any) -> Dict[str, Any]:
+    """Parse request data into a generic data-profile dictionary."""
     data_str = ""
 
     if isinstance(requests_data, str):
@@ -50,21 +77,53 @@ def _parse_request_data(requests_data: Any) -> Dict[str, int]:
     elif isinstance(requests_data, list) and requests_data:
         data_str = requests_data[0]
 
-    if data_str:
-        for part in data_str.split(","):
-            if "=" in part:
-                key, value = part.strip().split("=", 1)
-                key = key.strip()
-                value = value.strip()
-                try:
-                    if key == "prompt_tokens":
-                        prompt_tokens = int(value)
-                    elif key == "output_tokens":
-                        output_tokens = int(value)
-                except ValueError:
-                    pass  # Ignore non-integer values
+    parsed: Dict[str, Any] = {}
+    if not data_str:
+        return parsed
 
+    for part in data_str.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.strip().split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        parsed[key] = _coerce_data_profile_value(value)
+
+    return parsed
+
+
+def _parse_request_data(requests_data: Any) -> Dict[str, int]:
+    """Parse request data to extract prompt and output tokens."""
+    profile = _parse_request_profile(requests_data)
+    prompt_tokens = profile.get("prompt_tokens", 0)
+    output_tokens = profile.get("output_tokens", 0)
+    try:
+        prompt_tokens = int(prompt_tokens)
+    except (TypeError, ValueError):
+        prompt_tokens = 0
+    try:
+        output_tokens = int(output_tokens)
+    except (TypeError, ValueError):
+        output_tokens = 0
     return {"prompt_tokens": prompt_tokens, "output_tokens": output_tokens}
+
+
+def _ordered_data_profile_items(data_profile: Dict[str, Any]) -> list[tuple[str, Any]]:
+    preferred = [
+        (key, data_profile[key])
+        for key in DATA_PROFILE_PREFERRED_ORDER
+        if key in data_profile and data_profile[key] is not None
+    ]
+    remaining = sorted(
+        (
+            (key, value)
+            for key, value in data_profile.items()
+            if key not in DATA_PROFILE_PREFERRED_ORDER and value is not None
+        ),
+        key=lambda item: item[0],
+    )
+    return [*preferred, *remaining]
 
 
 def _extract_intended_concurrency(
@@ -281,6 +340,7 @@ class BenchmarkProcessor:
         output_html: Optional[str] = None,
         aws_profile: Optional[str] = None,
         replicas: int = 1,
+        data_profile: Optional[Dict[str, Any]] = None,
         prompt_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
         turns: Optional[int] = None,
@@ -304,6 +364,7 @@ class BenchmarkProcessor:
             output_html: Output HTML report filename (optional)
             aws_profile: AWS profile name (optional)
             replicas: Number of replicas (default: 1)
+            data_profile: Full data profile dictionary (optional)
             prompt_tokens: Prompt tokens for data profile (optional)
             output_tokens: Output tokens for data profile (optional)
             turns: Number of turns for multi-turn benchmarks (optional)
@@ -323,11 +384,28 @@ class BenchmarkProcessor:
         self.output_html = output_html or "benchmark_report.html"
 
         # Data profile parameters
-        self.prompt_tokens = prompt_tokens
-        self.output_tokens = output_tokens
-        self.turns = turns
-        self.prefix_tokens = prefix_tokens
-        self.prefix_count = prefix_count
+        normalized_profile = {
+            str(key): _coerce_data_profile_value(value)
+            for key, value in (data_profile or {}).items()
+            if value is not None
+        }
+        if prompt_tokens is not None:
+            normalized_profile["prompt_tokens"] = prompt_tokens
+        if output_tokens is not None:
+            normalized_profile["output_tokens"] = output_tokens
+        if turns is not None:
+            normalized_profile["turns"] = turns
+        if prefix_tokens is not None:
+            normalized_profile["prefix_tokens"] = prefix_tokens
+        if prefix_count is not None:
+            normalized_profile["prefix_count"] = prefix_count
+
+        self.data_profile = normalized_profile
+        self.prompt_tokens = normalized_profile.get("prompt_tokens")
+        self.output_tokens = normalized_profile.get("output_tokens")
+        self.turns = normalized_profile.get("turns")
+        self.prefix_tokens = normalized_profile.get("prefix_tokens")
+        self.prefix_count = normalized_profile.get("prefix_count")
 
         # Versions to comare (always include the current version)
         if compare_versions is None:
@@ -349,6 +427,25 @@ class BenchmarkProcessor:
         self.combined_df: Optional[pd.DataFrame] = None
         self.config: Optional[Dict[str, Any]] = None
         self.ttft_distribution_df: Optional[pd.DataFrame] = None
+
+    def _resolved_data_profile(self) -> Dict[str, Any]:
+        if self.data_profile:
+            return dict(self.data_profile)
+
+        try:
+            with open(self.json_path) as f:
+                payload = json.load(f)
+        except Exception:
+            return {}
+
+        benchmarks = payload.get("benchmarks") or []
+        if not benchmarks:
+            return {}
+
+        requests_data = _get_nested(
+            benchmarks[0], "request_loader", "data"
+        ) or _get_nested(benchmarks[0], "config", "requests", "data")
+        return _parse_request_profile(requests_data)
 
     def download_s3_csv(self) -> pd.DataFrame:
         """
@@ -1440,17 +1537,10 @@ class BenchmarkProcessor:
         version_lines = _wrap_header_items(header_versions)
 
         # Build data profile subtitle
-        data_profile_parts = []
-        if self.prompt_tokens is not None:
-            data_profile_parts.append(f"prompt_tokens: {self.prompt_tokens}")
-        if self.output_tokens is not None:
-            data_profile_parts.append(f"output_tokens: {self.output_tokens}")
-        if self.turns is not None:
-            data_profile_parts.append(f"turns: {self.turns}")
-        if self.prefix_tokens is not None:
-            data_profile_parts.append(f"prefix_tokens: {self.prefix_tokens}")
-        if self.prefix_count is not None:
-            data_profile_parts.append(f"prefix_count: {self.prefix_count}")
+        data_profile_parts = [
+            f"{key}: {value}"
+            for key, value in _ordered_data_profile_items(self._resolved_data_profile())
+        ]
 
         data_profile_str = (
             " | ".join(data_profile_parts)
