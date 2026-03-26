@@ -5,7 +5,7 @@ metadata:
 spec:
   model:
     name: Qwen/Qwen3-0.6B
-  deployment_profile: rhoai-kserve
+  deployment_profile: rhoai-distributed-default
   benchmark_profile: guidellm-smoke
   metrics_profile: default
   namespace: benchflow

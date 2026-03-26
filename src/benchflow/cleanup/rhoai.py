@@ -7,6 +7,41 @@ from ..models import ResolvedRunPlan
 from ..renderers.deployment import rhoai_profiler_configmap_name
 
 
+def _deployment_resource(plan: ResolvedRunPlan) -> str:
+    return (
+        "inferenceservice"
+        if plan.deployment.mode == "raw-kserve"
+        else "llminferenceservice"
+    )
+
+
+def _deployment_kind(plan: ResolvedRunPlan) -> str:
+    return (
+        "InferenceService"
+        if plan.deployment.mode == "raw-kserve"
+        else "LLMInferenceService"
+    )
+
+
+def _delete_raw_kserve_runtime(
+    plan: ResolvedRunPlan, *, kubectl_cmd: str, namespace: str
+) -> None:
+    if plan.deployment.mode != "raw-kserve":
+        return
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "servingruntime",
+            plan.deployment.release_name,
+            "-n",
+            namespace,
+            "--ignore-not-found",
+        ],
+        check=False,
+    )
+
+
 def _delete_profiler_configmap(
     plan: ResolvedRunPlan, *, kubectl_cmd: str, namespace: str
 ) -> None:
@@ -36,12 +71,14 @@ def cleanup_rhoai(
     kubectl_cmd = require_any_command("oc", "kubectl")
     namespace = plan.deployment.namespace
     release_name = plan.deployment.release_name
+    resource = _deployment_resource(plan)
+    resource_kind = _deployment_kind(plan)
 
     exists = run_command(
         [
             kubectl_cmd,
             "get",
-            "llminferenceservice",
+            resource,
             release_name,
             "-n",
             namespace,
@@ -52,23 +89,25 @@ def cleanup_rhoai(
         check=False,
     )
     if exists.returncode != 0:
+        _delete_raw_kserve_runtime(plan, kubectl_cmd=kubectl_cmd, namespace=namespace)
         _delete_profiler_configmap(plan, kubectl_cmd=kubectl_cmd, namespace=namespace)
         if skip_if_not_exists:
             return
         raise CommandError(
-            f"LLMInferenceService {release_name} not found in namespace {namespace}"
+            f"{resource_kind} {release_name} not found in namespace {namespace}"
         )
 
     run_command(
         [
             kubectl_cmd,
             "delete",
-            "llminferenceservice",
+            resource,
             release_name,
             "-n",
             namespace,
         ]
     )
+    _delete_raw_kserve_runtime(plan, kubectl_cmd=kubectl_cmd, namespace=namespace)
 
     if not wait_for_deletion:
         _delete_profiler_configmap(plan, kubectl_cmd=kubectl_cmd, namespace=namespace)
@@ -80,7 +119,7 @@ def cleanup_rhoai(
             [
                 kubectl_cmd,
                 "get",
-                "llminferenceservice",
+                resource,
                 release_name,
                 "-n",
                 namespace,
@@ -98,5 +137,5 @@ def cleanup_rhoai(
         time.sleep(5)
 
     raise CommandError(
-        f"timed out waiting for LLMInferenceService deletion: {release_name}"
+        f"timed out waiting for {resource_kind} deletion: {release_name}"
     )

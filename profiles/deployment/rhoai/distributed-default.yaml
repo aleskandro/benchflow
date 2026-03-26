@@ -1,10 +1,10 @@
 apiVersion: benchflow.io/v1alpha1
 kind: DeploymentProfile
 metadata:
-  name: rhoai-kserve
+  name: rhoai-distributed-default
 spec:
   platform: rhoai
-  mode: kserve
+  mode: distributed-default
   endpoint_path: /v1/models
   model_storage:
     pvc_name: models-storage

@@ -6,7 +6,7 @@ spec:
   model:
     name: Qwen/Qwen3-0.6B
   deployment_profile:
-    - rhoai-kserve
+    - rhoai-distributed-default
     - rhoai-approximate-prefix-cache
     - rhoai-precise-prefix-cache
   benchmark_profile: guidellm-smoke

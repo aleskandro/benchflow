@@ -1322,7 +1322,7 @@ def deploy_llmd_command(**kwargs: object) -> int:
 
 @deploy_group.command(
     "rhoai",
-    help="Deploy a RHOAI LLMInferenceService scenario from a resolved RunPlan.",
+    help="Deploy a RHOAI scenario from a resolved RunPlan.",
     short_help="Deploy a RHOAI scenario",
 )
 @runtime_plan_source_options

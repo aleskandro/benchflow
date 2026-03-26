@@ -45,7 +45,7 @@ def _release_name_for(experiment: Experiment) -> str:
 
 
 def _target_for(
-    platform: str, release_name: str, namespace: str, gateway: str, path: str
+    platform: str, mode: str, release_name: str, namespace: str, gateway: str, path: str
 ) -> TargetSpec:
     if platform == "llm-d":
         if gateway == "standalone":
@@ -57,6 +57,13 @@ def _target_for(
         return TargetSpec(discovery="static", base_url=base_url, path=path)
 
     if platform == "rhoai":
+        if mode == "raw-kserve":
+            return TargetSpec(
+                discovery="inferenceservice-status-url",
+                resource_kind="InferenceService",
+                resource_name=release_name,
+                path=path,
+            )
         return TargetSpec(
             discovery="llminferenceservice-status-url",
             resource_kind="LLMInferenceService",
@@ -266,6 +273,7 @@ def resolve_run_plan(
 
     target = _target_for(
         platform=deployment_profile.spec.platform,
+        mode=deployment_profile.spec.mode,
         release_name=release_name,
         namespace=namespace,
         gateway=deployment_profile.spec.gateway,

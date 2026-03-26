@@ -281,6 +281,8 @@ def collect_artifacts(
             "pods",
             "services",
             "configmaps",
+            "servingruntimes",
+            "inferenceservices",
             "gateways",
             "inferencepool",
             "llminferenceservices",

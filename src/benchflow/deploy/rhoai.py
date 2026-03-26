@@ -10,16 +10,35 @@ from ..models import ResolvedRunPlan
 from ..renderers.deployment import (
     render_rhoai_manifest,
     render_rhoai_profiler_configmap,
+    render_rhaiis_manifests,
 )
 from ..ui import detail, step, success
 
 
-def _deployment_exists(namespace: str, release_name: str, kubectl_cmd: str) -> bool:
+def _deployment_resource(plan: ResolvedRunPlan) -> str:
+    return (
+        "inferenceservice"
+        if plan.deployment.mode == "raw-kserve"
+        else "llminferenceservice"
+    )
+
+
+def _deployment_kind(plan: ResolvedRunPlan) -> str:
+    return (
+        "InferenceService"
+        if plan.deployment.mode == "raw-kserve"
+        else "LLMInferenceService"
+    )
+
+
+def _deployment_exists(
+    namespace: str, release_name: str, kubectl_cmd: str, resource: str
+) -> bool:
     result = run_command(
         [
             kubectl_cmd,
             "get",
-            "llminferenceservice",
+            resource,
             release_name,
             "-n",
             namespace,
@@ -170,6 +189,8 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
     kubectl_cmd = require_any_command("oc", "kubectl")
     namespace = plan.deployment.namespace
     release_name = plan.deployment.release_name
+    resource = _deployment_resource(plan)
+    resource_kind = _deployment_kind(plan)
     deadline = time.time() + timeout_seconds
     last_snapshot: tuple[bool, str, str] | None = None
 
@@ -182,7 +203,7 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
             [
                 kubectl_cmd,
                 "get",
-                "llminferenceservice",
+                resource,
                 release_name,
                 "-n",
                 namespace,
@@ -203,7 +224,7 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
         ready, url, _ = snapshot
         if ready and url:
             success(f"RHOAI deployment {release_name} is ready and published at {url}")
-            if _auth_disabled(plan):
+            if resource == "llminferenceservice" and _auth_disabled(plan):
                 _verify_public_route_auth(
                     plan, timeout_seconds=min(timeout_seconds, 300)
                 )
@@ -211,7 +232,7 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
         time.sleep(10)
 
     raise CommandError(
-        f"timed out waiting for RHOAI deployment {release_name} to become ready"
+        f"timed out waiting for {resource_kind} deployment {release_name} to become ready"
     )
 
 
@@ -226,15 +247,23 @@ def deploy_rhoai(
     kubectl_cmd = require_any_command("oc", "kubectl")
     namespace = plan.deployment.namespace
     release_name = plan.deployment.release_name
+    resource = _deployment_resource(plan)
+    resource_kind = _deployment_kind(plan)
 
-    if skip_if_exists and _deployment_exists(namespace, release_name, kubectl_cmd):
-        success(f"Skipping deploy; LLMInferenceService {release_name} already exists")
+    if skip_if_exists and _deployment_exists(
+        namespace, release_name, kubectl_cmd, resource
+    ):
+        success(f"Skipping deploy; {resource_kind} {release_name} already exists")
         return manifests_dir.resolve() if manifests_dir else Path.cwd()
 
     profiler_configmap = (
         render_rhoai_profiler_configmap(plan) if _profiling_enabled(plan) else None
     )
-    manifest = render_rhoai_manifest(plan)
+    manifests = (
+        render_rhaiis_manifests(plan)
+        if plan.deployment.mode == "raw-kserve"
+        else [render_rhoai_manifest(plan)]
+    )
     if manifests_dir is not None:
         manifests_dir.mkdir(parents=True, exist_ok=True)
         if profiler_configmap is not None:
@@ -243,9 +272,17 @@ def deploy_rhoai(
                 yaml.safe_dump(profiler_configmap, sort_keys=False), encoding="utf-8"
             )
             detail(f"Rendered profiler ConfigMap written to {profiler_target}")
-        target = manifests_dir / "llminferenceservice.yaml"
-        target.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
-        detail(f"Rendered RHOAI manifest written to {target}")
+        names = (
+            ["servingruntime.yaml", "inferenceservice.yaml"]
+            if plan.deployment.mode == "raw-kserve"
+            else ["llminferenceservice.yaml"]
+        )
+        for manifest, name in zip(manifests, names, strict=True):
+            target = manifests_dir / name
+            target.write_text(
+                yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+            )
+            detail(f"Rendered RHOAI manifest written to {target}")
 
     if profiler_configmap is not None:
         configmap_name = str(
@@ -256,17 +293,18 @@ def deploy_rhoai(
             [kubectl_cmd, "apply", "-f", "-"],
             input_text=yaml.safe_dump(profiler_configmap, sort_keys=False),
         )
-        success(f"Applied profiler ConfigMap {configmap_name} in namespace {namespace}")
+    success(f"Applied profiler ConfigMap {configmap_name} in namespace {namespace}")
 
     step(
         f"Applying RHOAI {plan.deployment.mode} deployment {release_name} "
         f"in namespace {namespace}"
     )
-    run_command(
-        [kubectl_cmd, "apply", "-f", "-"],
-        input_text=yaml.safe_dump(manifest, sort_keys=False),
-    )
-    success(f"Applied LLMInferenceService {release_name} in namespace {namespace}")
+    for manifest in manifests:
+        run_command(
+            [kubectl_cmd, "apply", "-f", "-"],
+            input_text=yaml.safe_dump(manifest, sort_keys=False),
+        )
+    success(f"Applied {resource_kind} {release_name} in namespace {namespace}")
 
     if verify:
         _verify_deployment(plan, verify_timeout_seconds)

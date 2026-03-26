@@ -114,7 +114,7 @@ def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
 
 def render_rhoai_manifest(plan: ResolvedRunPlan) -> dict[str, Any]:
     if plan.deployment.mode not in {
-        "kserve",
+        "distributed-default",
         "approximate-prefix-cache",
         "precise-prefix-cache",
     }:
@@ -161,6 +161,53 @@ def render_rhaiis_manifests(plan: ResolvedRunPlan) -> list[dict[str, Any]]:
         {"name": key, "value": value}
         for key, value in sorted(plan.deployment.runtime.env.items())
     ]
+    if plan.execution.profiling.enabled:
+        env.extend(
+            [
+                {
+                    "name": "POD_NAME",
+                    "valueFrom": {
+                        "fieldRef": {
+                            "apiVersion": "v1",
+                            "fieldPath": "metadata.name",
+                        }
+                    },
+                },
+                {"name": "PYTHONPATH", "value": RHOAI_PROFILER_MOUNT_PATH},
+                {
+                    "name": "VLLM_PROFILER_RANGES",
+                    "value": plan.execution.profiling.call_ranges,
+                },
+                {
+                    "name": "VLLM_PROFILER_OUTPUT_DIR",
+                    "value": RHOAI_PROFILER_OUTPUT_DIR,
+                },
+            ]
+        )
+
+    container_spec: dict[str, Any] = {
+        "name": "kserve-container",
+        "image": plan.deployment.runtime.image,
+        "command": ["python", "-m", "vllm.entrypoints.openai.api_server"],
+        "args": args,
+        "env": env,
+        "ports": [{"containerPort": 8080, "protocol": "TCP"}],
+    }
+    volumes: list[dict[str, Any]] = []
+    if plan.execution.profiling.enabled:
+        container_spec["volumeMounts"] = [
+            {
+                "mountPath": RHOAI_PROFILER_MOUNT_PATH,
+                "name": "vllm-profiler",
+                "readOnly": True,
+            }
+        ]
+        volumes.append(
+            {
+                "name": "vllm-profiler",
+                "configMap": {"name": rhoai_profiler_configmap_name(plan)},
+            }
+        )
 
     serving_runtime = {
         "apiVersion": "serving.kserve.io/v1alpha1",
@@ -171,20 +218,13 @@ def render_rhaiis_manifests(plan: ResolvedRunPlan) -> list[dict[str, Any]]:
             "labels": _base_labels(plan),
         },
         "spec": {
-            "containers": [
-                {
-                    "name": "kserve-container",
-                    "image": plan.deployment.runtime.image,
-                    "command": ["python", "-m", "vllm.entrypoints.openai.api_server"],
-                    "args": args,
-                    "env": env,
-                    "ports": [{"containerPort": 8080, "protocol": "TCP"}],
-                }
-            ],
+            "containers": [container_spec],
             "multiModel": False,
             "supportedModelFormats": [{"name": "pytorch", "autoSelect": True}],
         },
     }
+    if volumes:
+        serving_runtime["spec"]["volumes"] = volumes
 
     inference_service = {
         "apiVersion": "serving.kserve.io/v1beta1",
@@ -238,6 +278,25 @@ def write_deployment_assets(plan: ResolvedRunPlan, output_dir: Path) -> list[Pat
         return written
 
     if plan.deployment.platform == "rhoai":
+        if plan.deployment.mode == "raw-kserve":
+            manifests = render_rhaiis_manifests(plan)
+            names = ["servingruntime.yaml", "inferenceservice.yaml"]
+            for manifest, name in zip(manifests, names, strict=True):
+                target = output_dir / name
+                target.write_text(
+                    yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+                )
+                written.append(target)
+            if plan.execution.profiling.enabled:
+                profiler_target = output_dir / "vllm-profiler-configmap.yaml"
+                profiler_target.write_text(
+                    yaml.safe_dump(
+                        render_rhoai_profiler_configmap(plan), sort_keys=False
+                    ),
+                    encoding="utf-8",
+                )
+                written.append(profiler_target)
+            return written
         if plan.execution.profiling.enabled:
             profiler_target = output_dir / "vllm-profiler-configmap.yaml"
             profiler_target.write_text(

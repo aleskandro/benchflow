@@ -162,6 +162,34 @@ def resolve_target_base_url(target: Any, namespace: str) -> str:
             )
         return url.rstrip("/")
 
+    if target.discovery == "inferenceservice-status-url":
+        kubectl_cmd = require_any_command("oc", "kubectl")
+        resource_name = str(target.resource_name or "").strip()
+        if not resource_name:
+            raise CommandError(
+                "target discovery is inferenceservice-status-url but "
+                "target.resource_name is empty"
+            )
+        payload = run_json_command(
+            [
+                kubectl_cmd,
+                "get",
+                "inferenceservice",
+                resource_name,
+                "-n",
+                namespace,
+                "-o",
+                "json",
+            ]
+        )
+        url = str(payload.get("status", {}).get("url") or "").strip()
+        if not url:
+            raise CommandError(
+                f"InferenceService {resource_name} in namespace {namespace} "
+                "does not have status.url yet"
+            )
+        return url.rstrip("/")
+
     raise CommandError(f"unsupported target discovery strategy: {target.discovery}")
 
 

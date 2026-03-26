@@ -277,11 +277,11 @@ class Installer:
                 "bflow bootstrap --target-kubeconfig ~/.kube/target-cluster --cluster-name target-cluster"
             )
             detail(
-                f"bflow experiment run experiments/smoke/qwen3-06b-rhoai-kserve-smoke.yaml --namespace {options.namespace} --cluster-name target-cluster"
+                f"bflow experiment run experiments/smoke/qwen3-06b-rhoai-distributed-default-smoke.yaml --namespace {options.namespace} --cluster-name target-cluster"
             )
         else:
             detail(
-                f"bflow experiment run experiments/smoke/qwen3-06b-rhoai-kserve-smoke.yaml --namespace {options.namespace} --cluster-name <management-secret-name>"
+                f"bflow experiment run experiments/smoke/qwen3-06b-rhoai-distributed-default-smoke.yaml --namespace {options.namespace} --cluster-name <management-secret-name>"
             )
 
     def _is_connectivity_error(self, output: str) -> bool:
