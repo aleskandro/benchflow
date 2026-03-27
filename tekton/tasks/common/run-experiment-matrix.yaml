@@ -27,12 +27,15 @@ spec:
           value: $(params.IMAGE)
         - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
           value: $(workspaces.target-kubeconfig.path)
-      command:
-        - bflow
-      args:
-        - task
-        - run-experiment-matrix
-        - --run-plans-json
-        - $(params.RUN_PLANS)
-        - --child-pipeline-name
-        - $(params.CHILD_PIPELINE_NAME)
+      script: |
+        #!/bin/sh
+        set -eu
+
+        run_plans_path="/tmp/run-plans.json"
+        cat > "${run_plans_path}" <<'__BENCHFLOW_RUN_PLANS__'
+        $(params.RUN_PLANS)
+        __BENCHFLOW_RUN_PLANS__
+
+        exec bflow task run-experiment-matrix \
+          --run-plans-file "${run_plans_path}" \
+          --child-pipeline-name "$(params.CHILD_PIPELINE_NAME)"

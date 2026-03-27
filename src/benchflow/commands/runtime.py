@@ -919,13 +919,33 @@ def cmd_task_assert_status(args: argparse.Namespace) -> int:
 
 
 def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
-    try:
-        raw_run_plans = json.loads(args.run_plans_json)
-    except json.JSONDecodeError as exc:
-        raise ValidationError("invalid JSON passed to --run-plans-json") from exc
+    if bool(args.run_plans_json) == bool(args.run_plans_file):
+        raise ValidationError(
+            "provide exactly one of --run-plans-json or --run-plans-file"
+        )
+
+    if args.run_plans_file:
+        try:
+            raw_run_plans = json.loads(Path(args.run_plans_file).read_text())
+        except FileNotFoundError as exc:
+            raise ValidationError(
+                f"run plans file not found: {args.run_plans_file}"
+            ) from exc
+        except OSError as exc:
+            raise ValidationError(
+                f"unable to read --run-plans-file: {args.run_plans_file}"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise ValidationError("invalid JSON passed via --run-plans-file") from exc
+    else:
+        try:
+            raw_run_plans = json.loads(args.run_plans_json)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("invalid JSON passed to --run-plans-json") from exc
 
     if not isinstance(raw_run_plans, list) or not raw_run_plans:
-        raise ValidationError("--run-plans-json must contain a non-empty JSON array")
+        source_name = "--run-plans-file" if args.run_plans_file else "--run-plans-json"
+        raise ValidationError(f"{source_name} must contain a non-empty JSON array")
 
     plans = [load_run_plan_data(item) for item in raw_run_plans]
     run_matrix_supervisor(
@@ -1967,8 +1987,14 @@ def task_assert_status_command(**kwargs: object) -> int:
 )
 @click.option(
     "--run-plans-json",
-    required=True,
+    default=None,
     help="JSON array of resolved RunPlan objects.",
+)
+@click.option(
+    "--run-plans-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to a JSON file containing the resolved RunPlan array.",
 )
 @click.option(
     "--child-pipeline-name",
