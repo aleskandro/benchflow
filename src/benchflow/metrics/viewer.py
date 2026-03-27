@@ -5,6 +5,7 @@ import html
 import json
 import re
 import shutil
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
@@ -992,6 +993,13 @@ def serve_mlflow_metrics_dashboard(
     url = f"http://127.0.0.1:{DEFAULT_METRICS_VIEWER_PORT}/"
     mode = "comparison" if len(mlflow_run_ids) > 1 else "viewer"
     success(f"Serving metrics {mode} for {len(mlflow_run_ids)} MLflow run(s) at {url}")
+    try:
+        if webbrowser.open(url):
+            detail("Opened metrics viewer in the default browser")
+        else:
+            detail("Unable to auto-open the browser; open the viewer URL manually")
+    except Exception:
+        detail("Unable to auto-open the browser; open the viewer URL manually")
     detail("Press Ctrl-C to stop the local server")
     try:
         server.serve_forever()
