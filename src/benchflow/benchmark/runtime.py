@@ -36,6 +36,50 @@ log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 configure_logging(log_level)
 logger = logging.getLogger(__name__)
 
+_MLFLOW_METRIC_SECTIONS: dict[str, set[str]] = {
+    "requests": {
+        "total_requests",
+        "successful_requests",
+        "failed_requests",
+        "error_rate",
+        "request_concurrency_mean",
+    },
+    "throughput": {
+        "throughput_requests_per_sec",
+        "throughput_output_tokens_per_sec",
+        "total_tokens_per_second",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_tokens",
+    },
+    "e2e_latency": {
+        "latency_mean_sec",
+        "latency_median_sec",
+        "latency_p50_sec",
+        "latency_p90_sec",
+        "latency_p95_sec",
+        "latency_p99_sec",
+    },
+    "ttft": {
+        "ttft_mean_ms",
+        "ttft_median_ms",
+        "ttft_p95_ms",
+        "ttft_p99_ms",
+    },
+    "tpot": {
+        "tpot_mean_ms",
+        "tpot_median_ms",
+        "tpot_p95_ms",
+        "tpot_p99_ms",
+    },
+    "itl": {
+        "itl_mean_ms",
+        "itl_median_ms",
+        "itl_p95_ms",
+        "itl_p99_ms",
+    },
+}
+
 NON_DATA_PROFILE_PARAMS = {
     "target",
     "model",
@@ -60,6 +104,17 @@ class BenchmarkExecutionError(RuntimeError):
     def __init__(self, message: str, *, run_id: str = "") -> None:
         super().__init__(message)
         self.run_id = run_id
+
+
+def _mlflow_metric_name(metric_name: str) -> str:
+    for section, names in _MLFLOW_METRIC_SECTIONS.items():
+        if metric_name in names:
+            return f"{section}/{metric_name}"
+    return metric_name
+
+
+def _metrics_for_mlflow(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {_mlflow_metric_name(key): value for key, value in metrics.items()}
 
 
 def _stringify_data_profile_value(value: Any) -> Any:
@@ -969,7 +1024,7 @@ def run_benchmark_with_mlflow(
                             metrics = extract_metrics_from_benchmark(benchmark)
                             if metrics:
                                 metrics["concurrency"] = concurrency
-                                for key, value in metrics.items():
+                                for key, value in _metrics_for_mlflow(metrics).items():
                                     mlflow.log_metric(key, value, step=concurrency)
                                 logger.info(
                                     f"Logged {len(metrics)} metrics for concurrency={concurrency}"
@@ -1084,7 +1139,7 @@ def run_benchmark_with_mlflow(
                     metrics = extract_metrics_from_benchmark(benchmark)
                     if metrics:
                         metrics["concurrency"] = concurrency_step
-                        for key, value in metrics.items():
+                        for key, value in _metrics_for_mlflow(metrics).items():
                             mlflow.log_metric(key, value, step=concurrency_step)
                         logger.info(
                             f"Logged {len(metrics)} metrics for step "
