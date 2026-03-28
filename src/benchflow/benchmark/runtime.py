@@ -528,12 +528,14 @@ def run_guidellm_cli(
     )
 
     try:
-        with open(console_log_path, "w") as log_file:
+        with open(console_log_path, "w", encoding="utf-8") as log_file:
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
 
             for line in process.stdout:
