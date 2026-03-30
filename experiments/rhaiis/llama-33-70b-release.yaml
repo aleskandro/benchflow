@@ -7,7 +7,7 @@ spec:
     name:
       - RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
   deployment_profile: rhaiis-raw-vllm
-  benchmark_profile: guidellm-concurrent-heavy-heterogeneous
+  benchmark_profile: guidellm-concurrent-1k-1k
   metrics_profile: detailed
   mlflow:
     tags:
