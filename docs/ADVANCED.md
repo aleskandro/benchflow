@@ -158,6 +158,7 @@ bootstrap:
 - `models-storage` and `benchmark-results` PVCs are installed
 - Tekton is not installed unless `--install-tekton` is passed
 - Grafana is not installed unless `--install-grafana` is passed
+- accelerator prerequisites are installed unless `--no-install-accelerator-prerequisites` is passed
 - when `--cluster-name` is also set, BenchFlow creates a management-cluster
   kubeconfig Secret with the same name
 - when `--cluster-name` is also set, BenchFlow also registers a Kueue queue for
@@ -171,6 +172,16 @@ bootstrap:
 If you are developing BenchFlow itself, pass `--benchflow-image ghcr.io/...`
 to `bflow bootstrap` so the management-cluster remote-capacity controller uses
 the same image tag as your Tekton runs.
+
+If the target cluster is already provisioned and you do not want BenchFlow to
+touch operator versions there, bootstrap it like this:
+
+```bash
+bflow bootstrap \
+  --target-kubeconfig ~/.kube/target-cluster \
+  --cluster-name target-cluster \
+  --no-install-accelerator-prerequisites
+```
 
 ## Cluster Topologies
 

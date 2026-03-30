@@ -258,6 +258,11 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         if args.install_grafana is not None
         else (single_cluster or not remote_target)
     )
+    install_accelerator_prerequisites = (
+        args.install_accelerator_prerequisites
+        if args.install_accelerator_prerequisites is not None
+        else (single_cluster or remote_target)
+    )
     result = run_bootstrap(
         repo_root,
         BootstrapOptions(
@@ -266,7 +271,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             install_grafana=install_grafana,
             install_tekton=install_tekton,
             install_kueue=(single_cluster or not remote_target),
-            install_accelerator_prerequisites=(single_cluster or remote_target),
+            install_accelerator_prerequisites=install_accelerator_prerequisites,
             install_models_storage=(single_cluster or remote_target),
             install_results_storage=True,
             target_kubeconfig=target_kubeconfig,
@@ -998,6 +1003,15 @@ def cmd_task_remote_capacity_controller(args: argparse.Namespace) -> int:
         "Install and reconcile Tekton resources on the target cluster. Defaults "
         "to enabled for management-cluster and --single-cluster bootstrap, and "
         "disabled when --target-kubeconfig is set."
+    ),
+)
+@click.option(
+    "--install-accelerator-prerequisites/--no-install-accelerator-prerequisites",
+    default=None,
+    help=(
+        "Install or skip NFD and the GPU Operator. Defaults to enabled for "
+        "--single-cluster and remote target-cluster bootstrap, and disabled "
+        "for management-cluster-only bootstrap."
     ),
 )
 @click.option(
