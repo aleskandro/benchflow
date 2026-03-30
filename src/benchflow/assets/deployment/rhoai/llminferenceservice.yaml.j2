@@ -124,6 +124,15 @@ spec:
             resources: {}
 {% endif %}
   template:
+{% if runtime_node_selector %}
+    nodeSelector: {{ runtime_node_selector | tojson }}
+{% endif %}
+{% if runtime_affinity %}
+    affinity: {{ runtime_affinity | tojson }}
+{% endif %}
+{% if runtime_tolerations %}
+    tolerations: {{ runtime_tolerations | tojson }}
+{% endif %}
     containers:
       - name: main
 {% if runtime_image %}

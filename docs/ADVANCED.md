@@ -355,6 +355,20 @@ spec:
         - --max-num-seqs=256
       env: # --env KEY=VALUE, repeat to set multiple variables
         LOG_LEVEL: DEBUG
+      node_selector:
+        kubernetes.io/hostname: worker-0
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [worker-0]
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
     llm_d:
       repo_ref: v0.4.1 # --llmd-repo-ref, string or list for matrix
     rhoai:
@@ -367,6 +381,7 @@ Override semantics:
 - `images.runtime`, `images.scheduler`, `scale.replicas`, `scale.tensor_parallelism`, and `llm_d.repo_ref` replace the profile value
 - `runtime.vllm_args` appends to the profile vLLM args
 - `runtime.env` merges by key and override values win on collisions
+- `runtime.node_selector`, `runtime.affinity`, and `runtime.tolerations` replace the profile value when set in `spec.overrides.runtime`
 - benchmark `requirements` can raise the effective deployment runtime settings for a given child `RunPlan`
 - today `requirements.min_max_model_len` raises the effective `--max-model-len` for that resolved run when the benchmark needs a larger context window than the deployment default
 - list-valued `model.name`, profile refs, and override axes produce a cartesian-product matrix
@@ -431,6 +446,20 @@ spec:
       - --max-model-len=8192 # appended to by spec.overrides.runtime.vllm_args or --vllm-arg
     env:
       VLLM_LOGGING_LEVEL: INFO # merged with spec.overrides.runtime.env or --env
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-H200 # profile-owned node selector for runtime pods
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values: [worker-0.example]
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
   model_storage:
     pvc_name: models-storage # no CLI override
     cache_dir: /models # no CLI override

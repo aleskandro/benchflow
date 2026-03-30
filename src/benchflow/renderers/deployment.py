@@ -55,6 +55,9 @@ def render_llmd_values(plan: ResolvedRunPlan) -> dict[str, Any]:
             "tensorParallelism": plan.deployment.runtime.tensor_parallelism,
             "vllmArgs": plan.deployment.runtime.vllm_args,
             "env": plan.deployment.runtime.env,
+            "nodeSelector": plan.deployment.runtime.node_selector,
+            "affinity": plan.deployment.runtime.affinity,
+            "tolerations": plan.deployment.runtime.tolerations,
         },
         "options": plan.deployment.options,
     }
@@ -99,6 +102,9 @@ def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
         "scheduler_image": plan.deployment.scheduler_image,
         "runtime_args": _rhoai_vllm_args(plan),
         "runtime_env": _rhoai_runtime_env(plan),
+        "runtime_node_selector": plan.deployment.runtime.node_selector,
+        "runtime_affinity": plan.deployment.runtime.affinity,
+        "runtime_tolerations": plan.deployment.runtime.tolerations,
         "gpu_count": str(plan.deployment.runtime.tensor_parallelism),
         "custom_scheduler_enabled": custom_scheduler_enabled,
         "approximate_prefix_cache_enabled": (
@@ -257,6 +263,14 @@ def render_rhaiis_raw_vllm_manifests(plan: ResolvedRunPlan) -> list[dict[str, An
             },
         },
     }
+
+    pod_spec = deployment["spec"]["template"]["spec"]
+    if plan.deployment.runtime.node_selector:
+        pod_spec["nodeSelector"] = dict(plan.deployment.runtime.node_selector)
+    if plan.deployment.runtime.affinity:
+        pod_spec["affinity"] = dict(plan.deployment.runtime.affinity)
+    if plan.deployment.runtime.tolerations:
+        pod_spec["tolerations"] = list(plan.deployment.runtime.tolerations)
 
     service = {
         "apiVersion": "v1",

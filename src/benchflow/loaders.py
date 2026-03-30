@@ -140,6 +140,39 @@ def _nonempty_string(raw: Any, field_name: str) -> str | None:
     return cleaned
 
 
+def _string_mapping(raw: Any, field_name: str) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValidationError(f"{field_name} must be a mapping")
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+
+def _mapping(raw: Any, field_name: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValidationError(f"{field_name} must be a mapping")
+    return dict(raw)
+
+
+def _mapping_list(raw: Any, field_name: str) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValidationError(f"{field_name} must be a list")
+    values: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValidationError(f"{field_name}[{index}] must be a mapping")
+        values.append(dict(item))
+    return values
+
+
 def _overrides_from_dict(raw: dict[str, Any] | None) -> OverrideSpec:
     raw = raw or {}
     images = raw.get("images") or {}
@@ -173,6 +206,27 @@ def _overrides_from_dict(raw: dict[str, Any] | None) -> OverrideSpec:
                 str(key): str(value)
                 for key, value in (runtime.get("env") or {}).items()
             },
+            node_selector=(
+                _string_mapping(
+                    runtime.get("node_selector"),
+                    "spec.overrides.runtime.node_selector",
+                )
+                if "node_selector" in runtime
+                else None
+            ),
+            affinity=(
+                _mapping(runtime.get("affinity"), "spec.overrides.runtime.affinity")
+                if "affinity" in runtime
+                else None
+            ),
+            tolerations=(
+                _mapping_list(
+                    runtime.get("tolerations"),
+                    "spec.overrides.runtime.tolerations",
+                )
+                if "tolerations" in runtime
+                else None
+            ),
         ),
         benchmark=OverrideBenchmarkSpec(
             rates=_int_list(benchmark.get("rates"), "spec.overrides.benchmark.rates"),
@@ -250,6 +304,11 @@ def _runtime_from_dict(raw: dict[str, Any] | None) -> RuntimeSpec:
         tensor_parallelism=int(raw.get("tensor_parallelism", 1)),
         vllm_args=[str(item) for item in (raw.get("vllm_args") or [])],
         env=env,
+        node_selector=_string_mapping(
+            raw.get("node_selector"), "spec.runtime.node_selector"
+        ),
+        affinity=_mapping(raw.get("affinity"), "spec.runtime.affinity"),
+        tolerations=_mapping_list(raw.get("tolerations"), "spec.runtime.tolerations"),
     )
 
 

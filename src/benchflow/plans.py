@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 
 from .loaders import ProfileCatalog
@@ -248,6 +249,21 @@ def resolve_run_plan(
             **deployment_profile.spec.runtime.env,
             **experiment.spec.overrides.runtime.env,
         },
+        node_selector=(
+            dict(experiment.spec.overrides.runtime.node_selector)
+            if experiment.spec.overrides.runtime.node_selector is not None
+            else dict(deployment_profile.spec.runtime.node_selector)
+        ),
+        affinity=(
+            deepcopy(experiment.spec.overrides.runtime.affinity)
+            if experiment.spec.overrides.runtime.affinity is not None
+            else deepcopy(deployment_profile.spec.runtime.affinity)
+        ),
+        tolerations=(
+            deepcopy(experiment.spec.overrides.runtime.tolerations)
+            if experiment.spec.overrides.runtime.tolerations is not None
+            else deepcopy(deployment_profile.spec.runtime.tolerations)
+        ),
     )
     _validate_profiling_support(
         platform=deployment_profile.spec.platform,

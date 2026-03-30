@@ -137,6 +137,12 @@ def _patch_values(plan: ResolvedRunPlan, values_file: Path) -> dict[str, Any]:
     decode["replicas"] = runtime.replicas
     decode.setdefault("parallelism", {})
     decode["parallelism"]["tensor"] = runtime.tensor_parallelism
+    if runtime.node_selector:
+        decode["nodeSelector"] = dict(runtime.node_selector)
+    if runtime.affinity:
+        decode["affinity"] = dict(runtime.affinity)
+    if runtime.tolerations:
+        decode["tolerations"] = list(runtime.tolerations)
 
     env = container.setdefault("env", [])
     managed_env_names = {"CUDA_VISIBLE_DEVICES", *runtime.env.keys()}

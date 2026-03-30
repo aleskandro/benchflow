@@ -299,6 +299,21 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                 **base_experiment.spec.overrides.runtime.env,
                 **cli_env,
             },
+            node_selector=(
+                dict(base_experiment.spec.overrides.runtime.node_selector)
+                if base_experiment.spec.overrides.runtime.node_selector is not None
+                else None
+            ),
+            affinity=(
+                dict(base_experiment.spec.overrides.runtime.affinity)
+                if base_experiment.spec.overrides.runtime.affinity is not None
+                else None
+            ),
+            tolerations=(
+                list(base_experiment.spec.overrides.runtime.tolerations)
+                if base_experiment.spec.overrides.runtime.tolerations is not None
+                else None
+            ),
         ),
         benchmark=OverrideBenchmarkSpec(
             rates=(

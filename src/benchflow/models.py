@@ -237,6 +237,9 @@ class OverrideScaleSpec:
 class OverrideRuntimeSpec:
     vllm_args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    node_selector: dict[str, str] | None = None
+    affinity: dict[str, Any] | None = None
+    tolerations: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)
@@ -299,6 +302,9 @@ class RuntimeSpec:
     tensor_parallelism: int = 1
     vllm_args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    node_selector: dict[str, str] = field(default_factory=dict)
+    affinity: dict[str, Any] = field(default_factory=dict)
+    tolerations: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
