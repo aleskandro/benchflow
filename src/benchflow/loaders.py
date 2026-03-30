@@ -242,6 +242,14 @@ def _overrides_from_dict(raw: dict[str, Any] | None) -> OverrideSpec:
                 benchmark.get("request_type"),
                 "spec.overrides.benchmark.request_type",
             ),
+            env=(
+                _string_mapping(
+                    benchmark.get("env"),
+                    "spec.overrides.benchmark.env",
+                )
+                if "env" in benchmark
+                else None
+            ),
         ),
         llm_d=OverrideLlmdSpec(
             repo_ref=_string_or_list(

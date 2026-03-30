@@ -303,6 +303,11 @@ def resolve_run_plan(
         benchmark.max_requests = overrides.benchmark.max_requests
     if overrides.benchmark.request_type is not None:
         benchmark.request_type = overrides.benchmark.request_type
+    if overrides.benchmark.env is not None:
+        benchmark.env = {
+            **benchmark_profile.spec.env,
+            **overrides.benchmark.env,
+        }
 
     target = (
         TargetSpec(

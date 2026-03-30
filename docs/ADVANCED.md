@@ -384,6 +384,9 @@ spec:
       repo_ref: v0.4.1 # --llmd-repo-ref, string or list for matrix
     rhoai:
       enable_auth: false # --rhoai-auth / --no-rhoai-auth
+    benchmark:
+      env:
+        GUIDELLM__LOGGING__CONSOLE_LOG_LEVEL: DEBUG # profile-owned benchmark env can be overridden per experiment
 ```
 
 Override semantics:
@@ -393,6 +396,7 @@ Override semantics:
 - `runtime.vllm_args` appends to the profile vLLM args
 - `runtime.env` merges by key and override values win on collisions
 - `runtime.node_selector`, `runtime.affinity`, and `runtime.tolerations` replace the profile value when set in `spec.overrides.runtime`
+- `benchmark.env` merges by key and override values win on collisions
 - benchmark `requirements` can raise the effective deployment runtime settings for a given child `RunPlan`
 - today `requirements.min_max_model_len` raises the effective `--max-model-len` for that resolved run when the benchmark needs a larger context window than the deployment default
 - list-valued `model.name`, profile refs, and override axes produce a cartesian-product matrix

@@ -248,6 +248,7 @@ class OverrideBenchmarkSpec:
     max_seconds: int | None = None
     max_requests: str | None = None
     request_type: str | None = None
+    env: dict[str, str] | None = None
 
 
 @dataclass(slots=True)

@@ -247,6 +247,11 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                             max_seconds=experiment.spec.overrides.benchmark.max_seconds,
                             max_requests=experiment.spec.overrides.benchmark.max_requests,
                             request_type=experiment.spec.overrides.benchmark.request_type,
+                            env=(
+                                dict(experiment.spec.overrides.benchmark.env)
+                                if experiment.spec.overrides.benchmark.env is not None
+                                else None
+                            ),
                         ),
                         llm_d=OverrideLlmdSpec(repo_ref=repo_ref),
                         rhoai=OverrideRhoaiSpec(
