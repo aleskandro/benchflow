@@ -326,6 +326,9 @@ spec:
   target_cluster:
     kubeconfig_secret: target-cluster-kubeconfig # --target-kubeconfig-secret
     kubeconfig: /absolute/path/to/kubeconfig # --target-kubeconfig, local CLI only
+  target:
+    base_url: https://my-existing-endpoint.example.com # --target-url
+    path: /v1/models # --target-path; defaults to /v1/models
   ttl_seconds_after_finished: 3600 # --ttl-seconds-after-finished
   stages:
     download: true # --download / --no-download
@@ -378,6 +381,35 @@ Target-cluster semantics:
 - use `--target-kubeconfig` only for direct local BenchFlow commands; Tekton `PipelineRun`s cannot see your local filesystem
 - create the management-cluster Secret with `bflow target kubeconfig-secret create`
 - the control cluster runs Tekton, but target clusters do not need Tekton
+
+Existing endpoint path:
+
+- set `spec.target.base_url` to benchmark an already deployed endpoint
+- this is a benchmark-only path; disable `download`, `deploy`, `collect`, and `cleanup`
+- BenchFlow resolves the target as a static URL and skips deployment discovery entirely
+
+Example:
+
+```yaml
+apiVersion: benchflow.io/v1alpha1
+kind: Experiment
+metadata:
+  name: existing-endpoint-benchmark
+spec:
+  model:
+    name: Qwen/Qwen3-0.6B
+  deployment_profile: rhoai-distributed-default
+  benchmark_profile: guidellm-smoke
+  metrics_profile: detailed
+  target:
+    base_url: https://my-existing-endpoint.example.com
+  stages:
+    download: false
+    deploy: false
+    benchmark: true
+    collect: false
+    cleanup: false
+```
 - setup, deploy, teardown, and cleanup run from the control cluster against the target kubeconfig
 - download, wait-for-endpoint, benchmark, artifact collection, and metrics collection run as plain Kubernetes `Job`s in the target cluster and copy results back when needed
 

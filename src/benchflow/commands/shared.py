@@ -22,6 +22,7 @@ from ..models import (
     ExecutionSpec,
     Experiment,
     ExperimentSpec,
+    ExperimentTargetSpec,
     Metadata,
     MlflowSpec,
     ModelSpec,
@@ -138,6 +139,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
             stages=stages,
             mlflow=mlflow,
             execution=ExecutionSpec(),
+            target=ExperimentTargetSpec(),
             target_cluster=ClusterTargetSpec(),
             overrides=OverrideSpec(),
         )
@@ -242,6 +244,20 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
         str(target_kubeconfig_secret)
         if target_kubeconfig_secret is not None
         else base_experiment.spec.target_cluster.kubeconfig_secret
+    )
+    target_url = getattr(args, "target_url", None)
+    target_path = getattr(args, "target_path", None)
+    resolved_target = ExperimentTargetSpec(
+        base_url=(
+            str(target_url).strip()
+            if target_url is not None
+            else base_experiment.spec.target.base_url
+        ),
+        path=(
+            str(target_path).strip() or "/v1/models"
+            if target_path is not None
+            else base_experiment.spec.target.path
+        ),
     )
     target_host_aliases = dict(base_experiment.spec.target_cluster.host_aliases)
     if resolved_target_kubeconfig_secret:
@@ -350,6 +366,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                     call_ranges=base_experiment.spec.execution.profiling.call_ranges,
                 ),
             ),
+            target=resolved_target,
             target_cluster=ClusterTargetSpec(
                 kubeconfig=resolved_target_kubeconfig,
                 kubeconfig_secret=resolved_target_kubeconfig_secret,
@@ -464,6 +481,14 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
         click.option(
             "--target-kubeconfig-secret",
             help="Secret that contains a kubeconfig for in-cluster target-cluster operations.",
+        ),
+        click.option(
+            "--target-url",
+            help="Benchmark an existing endpoint base URL instead of resolving a deployed target.",
+        ),
+        click.option(
+            "--target-path",
+            help="Readiness path for an existing target URL. Defaults to /v1/models.",
         ),
         click.option(
             "--cluster-name",

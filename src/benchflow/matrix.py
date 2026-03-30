@@ -8,6 +8,7 @@ from .models import (
     ExecutionSpec,
     Experiment,
     ExperimentSpec,
+    ExperimentTargetSpec,
     Metadata,
     MlflowSpec,
     ModelSpec,
@@ -196,6 +197,10 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                             enabled=experiment.spec.execution.profiling.enabled,
                             call_ranges=experiment.spec.execution.profiling.call_ranges,
                         ),
+                    ),
+                    target=ExperimentTargetSpec(
+                        base_url=experiment.spec.target.base_url,
+                        path=experiment.spec.target.path,
                     ),
                     target_cluster=ClusterTargetSpec(
                         kubeconfig=experiment.spec.target_cluster.kubeconfig,

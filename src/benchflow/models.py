@@ -213,6 +213,15 @@ class ClusterTargetSpec:
 
 
 @dataclass(slots=True)
+class ExperimentTargetSpec:
+    base_url: str = ""
+    path: str = "/v1/models"
+
+    def enabled(self) -> bool:
+        return bool(self.base_url.strip())
+
+
+@dataclass(slots=True)
 class OverrideImagesSpec:
     runtime: str | list[str] | None = None
     scheduler: str | list[str] | None = None
@@ -270,6 +279,7 @@ class ExperimentSpec:
     stages: StageSpec = field(default_factory=StageSpec)
     mlflow: MlflowSpec = field(default_factory=MlflowSpec)
     execution: ExecutionSpec = field(default_factory=ExecutionSpec)
+    target: ExperimentTargetSpec = field(default_factory=ExperimentTargetSpec)
     target_cluster: ClusterTargetSpec = field(default_factory=ClusterTargetSpec)
     overrides: OverrideSpec = field(default_factory=OverrideSpec)
 

@@ -16,6 +16,7 @@ from .models import (
     ExecutionSpec,
     Experiment,
     ExperimentSpec,
+    ExperimentTargetSpec,
     MetricsProfile,
     MetricsProfileSpec,
     MlflowSpec,
@@ -219,6 +220,19 @@ def _target_cluster_from_dict(raw: dict[str, Any] | None) -> ClusterTargetSpec:
     )
 
 
+def _experiment_target_from_dict(raw: dict[str, Any] | None) -> ExperimentTargetSpec:
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ValidationError("target must be a mapping")
+    base_url = str(raw.get("base_url", "") or "").strip()
+    path = str(raw.get("path", "/v1/models") or "/v1/models").strip()
+    if not path:
+        raise ValidationError("target.path must not be empty")
+    if raw and not base_url:
+        raise ValidationError("target.base_url must not be empty")
+    return ExperimentTargetSpec(base_url=base_url, path=path)
+
+
 def load_yaml_file(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
@@ -293,6 +307,7 @@ def load_experiment(path: Path) -> Experiment:
         stages=StageSpec.from_dict(spec.get("stages")),
         mlflow=MlflowSpec.from_dict(spec.get("mlflow")),
         execution=ExecutionSpec.from_dict(spec.get("execution")),
+        target=_experiment_target_from_dict(spec.get("target")),
         target_cluster=_target_cluster_from_dict(spec.get("target_cluster")),
         overrides=_overrides_from_dict(spec.get("overrides")),
     )

@@ -30,6 +30,22 @@ def _validate_profiling_support(*, platform: str, profiling_enabled: bool) -> No
         )
 
 
+def _validate_existing_target_support(experiment: Experiment) -> None:
+    if not experiment.spec.target.enabled():
+        return
+    invalid_stages = [
+        stage_name
+        for stage_name in ("download", "deploy", "collect", "cleanup")
+        if getattr(experiment.spec.stages, stage_name)
+    ]
+    if invalid_stages:
+        joined = ", ".join(invalid_stages)
+        raise ValidationError(
+            "spec.target.base_url requires the following stages to be disabled: "
+            f"{joined}"
+        )
+
+
 def _release_name_for(experiment: Experiment) -> str:
     child_index = str(
         (experiment.metadata.labels or {}).get(_MATRIX_CHILD_INDEX_LABEL) or ""
@@ -166,6 +182,7 @@ def _resolve_vllm_args(
 def resolve_run_plan(
     experiment: Experiment, catalog: ProfileCatalog
 ) -> ResolvedRunPlan:
+    _validate_existing_target_support(experiment)
     deployment_profile_names = normalize_profile_refs(
         experiment.spec.deployment_profile, "spec.deployment_profile"
     )
@@ -271,13 +288,21 @@ def resolve_run_plan(
     if overrides.benchmark.request_type is not None:
         benchmark.request_type = overrides.benchmark.request_type
 
-    target = _target_for(
-        platform=deployment_profile.spec.platform,
-        mode=deployment_profile.spec.mode,
-        release_name=release_name,
-        namespace=namespace,
-        gateway=deployment_profile.spec.gateway,
-        path=deployment_profile.spec.endpoint_path,
+    target = (
+        TargetSpec(
+            discovery="static",
+            base_url=experiment.spec.target.base_url.rstrip("/"),
+            path=experiment.spec.target.path,
+        )
+        if experiment.spec.target.enabled()
+        else _target_for(
+            platform=deployment_profile.spec.platform,
+            mode=deployment_profile.spec.mode,
+            release_name=release_name,
+            namespace=namespace,
+            gateway=deployment_profile.spec.gateway,
+            path=deployment_profile.spec.endpoint_path,
+        )
     )
 
     deployment = ResolvedDeployment(
