@@ -9,7 +9,13 @@ from typing import Any
 import yaml
 
 from ..assets import render_yaml_documents
-from ..cluster import CommandError, require_any_command, run_command, run_json_command
+from ..cluster import (
+    CommandError,
+    require_any_command,
+    run_command,
+    run_json_command,
+    use_kubeconfig,
+)
 from ..models import ResolvedRunPlan
 from ..ui import detail, step, success
 
@@ -24,6 +30,8 @@ RHOAI_APPLICATIONS_NAMESPACE = "redhat-ods-applications"
 RHOAI_GATEWAYCLASS_NAME = "openshift-default"
 RHOAI_GATEWAY_NAME = "openshift-ai-inference"
 RHOAI_GATEWAY_NAMESPACE = "openshift-ingress"
+_RHOAI_VERSION_RE = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
+_RHOAI_EA_RE = re.compile(r"(?i)(?:^|[-_.])ea[-_.]?(?P<index>\d+)(?:$|[-_.])")
 
 
 def _empty_state() -> dict[str, Any]:
@@ -139,6 +147,53 @@ def _parse_version_tuple(value: str) -> tuple[int, ...]:
     if not match:
         return tuple()
     return tuple(int(part) for part in match.groups())
+
+
+def _normalize_rhoai_mlflow_version(value: str) -> str | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+
+    version_match = _RHOAI_VERSION_RE.search(candidate)
+    if version_match is None:
+        return None
+
+    label = f"RHOAI-{version_match.group('major')}.{version_match.group('minor')}"
+    ea_match = _RHOAI_EA_RE.search(candidate)
+    if ea_match is None:
+        return label
+    return f"{label}-EA{ea_match.group('index')}"
+
+
+def discover_rhoai_mlflow_version(kubeconfig: str | Path | None = None) -> str:
+    kubectl_cmd = require_any_command("oc", "kubectl")
+    with use_kubeconfig(kubeconfig):
+        subscription = run_json_command(
+            [
+                kubectl_cmd,
+                "get",
+                "subscription",
+                RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+                "-n",
+                RHOAI_OPERATOR_NAMESPACE,
+                "-o",
+                "json",
+            ]
+        )
+
+    candidates = (
+        (subscription.get("status", {}).get("currentCSVDesc", {}) or {}).get("version"),
+        subscription.get("status", {}).get("currentCSV"),
+        subscription.get("status", {}).get("installedCSV"),
+    )
+    for candidate in candidates:
+        version = _normalize_rhoai_mlflow_version(str(candidate or ""))
+        if version:
+            return version
+
+    raise CommandError(
+        "could not derive a RHOAI MLflow version from subscription/rhods-operator"
+    )
 
 
 def _resolve_rhoai_starting_csv(kubectl_cmd: str) -> str:

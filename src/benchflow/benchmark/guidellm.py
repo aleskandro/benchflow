@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..cluster import CommandError
 from ..models import ResolvedRunPlan
-from ..setup.rhoai import RHOAI_PINNED_SERIES
+from ..setup.rhoai import RHOAI_PINNED_SERIES, discover_rhoai_mlflow_version
 from ..ui import detail, step, success, warning
 from . import runtime as runtime_module
 
@@ -60,6 +60,11 @@ def benchmark_version_from_plan(plan: ResolvedRunPlan) -> str:
     if plan.deployment.platform == "llm-d":
         return f"llm-d-{plan.deployment.repo_ref}"
     if plan.deployment.platform == "rhoai":
+        kubeconfig = str(plan.target_cluster.kubeconfig or "").strip() or None
+        try:
+            return discover_rhoai_mlflow_version(kubeconfig=kubeconfig)
+        except CommandError:
+            pass
         return f"RHOAI-{RHOAI_PINNED_SERIES.rstrip('.')}"
     return f"{plan.deployment.platform}-{plan.deployment.mode}"
 

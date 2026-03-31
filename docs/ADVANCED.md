@@ -761,6 +761,15 @@ BenchFlow also sets default MLflow tags from the resolved run:
 - `benchmark_profile`
 - `metrics_profile`
 
+If you do not set `spec.mlflow.version`, BenchFlow also derives a default
+version label:
+
+- `llm-d` uses `llm-d-<repo_ref>`
+- `rhoai` tries the live `rhods-operator` subscription version and normalizes it
+  to labels like `RHOAI-3.3` or `RHOAI-3.4-EA1`
+- if that live RHOAI lookup fails, BenchFlow falls back to its pinned RHOAI
+  series label
+
 The benchmark runtime adds:
 
 - `vllm_version`
