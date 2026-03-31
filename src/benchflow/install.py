@@ -24,7 +24,7 @@ from .kueue import (
     REMOTE_CAPACITY_CONTROLLER_DEPLOYMENT,
     ensure_cluster_queue_resources,
 )
-from .ui import detail, emit, panel, rule, step, success, warning
+from .ui import detail, emit, panel, rule, step, success, ui_scope, warning
 
 
 CONNECTIVITY_MARKERS = (
@@ -62,6 +62,7 @@ class BootstrapOptions:
     models_storage_class: str | None = None
     results_storage_size: str = "20Gi"
     results_storage_class: str | None = None
+    cluster_name: str | None = None
 
 
 class Installer:
@@ -93,42 +94,53 @@ class Installer:
             return "remote-target"
         return "management-cluster"
 
-    def run(self) -> int:
-        self.ensure_cluster_access()
-        if self.options.install_models_storage:
-            self.ensure_storage_class(
-                self.options.models_storage_class, "models-storage"
-            )
-            self.ensure_default_storage_class_if_needed(
-                self.options.models_storage_class, "models-storage"
-            )
-        if self.options.install_results_storage:
-            self.ensure_storage_class(
-                self.options.results_storage_class, "benchmark-results"
-            )
-            self.ensure_default_storage_class_if_needed(
-                self.options.results_storage_class, "benchmark-results"
-            )
-        self.ensure_namespace(self.options.namespace)
-        if self.options.install_grafana:
-            self.ensure_namespace(self.grafana_namespace)
+    @property
+    def ui_label(self) -> str:
+        if self.options.single_cluster:
+            return "[single-cluster]"
+        if self.options.target_kubeconfig:
+            target_name = str(self.options.cluster_name or "target-cluster").strip()
+            return f"[target-cluster:{target_name}]"
+        return "[management-cluster]"
 
-        self.print_intro()
+    def run(self, *, emit_summary: bool = True) -> int:
+        with ui_scope(self.ui_label):
+            self.ensure_cluster_access()
+            if self.options.install_models_storage:
+                self.ensure_storage_class(
+                    self.options.models_storage_class, "models-storage"
+                )
+                self.ensure_default_storage_class_if_needed(
+                    self.options.models_storage_class, "models-storage"
+                )
+            if self.options.install_results_storage:
+                self.ensure_storage_class(
+                    self.options.results_storage_class, "benchmark-results"
+                )
+                self.ensure_default_storage_class_if_needed(
+                    self.options.results_storage_class, "benchmark-results"
+                )
+            self.ensure_namespace(self.options.namespace)
+            if self.options.install_grafana:
+                self.ensure_namespace(self.grafana_namespace)
 
-        if self.options.install_accelerator_prerequisites:
-            self.install_accelerator_prerequisites()
-        if self.options.install_tekton:
-            self.install_tekton_if_needed()
-            self.configure_tekton_scc()
-        if self.options.install_kueue:
-            self.install_kueue_if_needed()
-        self.install_grafana_if_needed()
-        self.install_real_secrets()
-        self.apply_namespaced_resources()
-        if self.options.install_kueue:
-            self.apply_kueue_support_resources()
-        self.apply_grafana_stack()
-        self.print_summary()
+            self.print_intro()
+
+            if self.options.install_accelerator_prerequisites:
+                self.install_accelerator_prerequisites()
+            if self.options.install_tekton:
+                self.install_tekton_if_needed()
+                self.configure_tekton_scc()
+            if self.options.install_kueue:
+                self.install_kueue_if_needed()
+            self.install_grafana_if_needed()
+            self.install_real_secrets()
+            self.apply_namespaced_resources()
+            if self.options.install_kueue:
+                self.apply_kueue_support_resources()
+            self.apply_grafana_stack()
+            if emit_summary:
+                self.print_summary()
         return 0
 
     def print_intro(self) -> None:
@@ -1565,9 +1577,11 @@ class Installer:
         self.wait_for_grafana_ready(timeout_seconds=600)
 
 
-def run_bootstrap(repo_root: Path, options: BootstrapOptions) -> int:
+def run_bootstrap(
+    repo_root: Path, options: BootstrapOptions, *, emit_summary: bool = True
+) -> int:
     installer = Installer(repo_root, options)
-    return installer.run()
+    return installer.run(emit_summary=emit_summary)
 
 
 def reconcile_management_cluster_queue(
@@ -1577,6 +1591,7 @@ def reconcile_management_cluster_queue(
     cluster_name: str,
     gpu_capacity: int,
     benchflow_image: str = DEFAULT_CONTROLLER_IMAGE,
+    ui_label: str = "[management-cluster]",
 ) -> None:
     installer = Installer(
         repo_root,
@@ -1591,14 +1606,16 @@ def reconcile_management_cluster_queue(
             benchflow_image=benchflow_image,
         ),
     )
-    installer.ensure_cluster_access()
-    installer.ensure_namespace(namespace)
-    installer.install_kueue_if_needed()
-    installer.apply_kueue_support_resources()
-    installer.register_kueue_cluster_queue(
-        cluster_name=cluster_name,
-        gpu_capacity=gpu_capacity,
-    )
+    with ui_scope(ui_label):
+        step(f"Registering BenchFlow Kueue capacity for {cluster_name}")
+        installer.ensure_cluster_access()
+        installer.ensure_namespace(namespace)
+        installer.install_kueue_if_needed()
+        installer.apply_kueue_support_resources()
+        installer.register_kueue_cluster_queue(
+            cluster_name=cluster_name,
+            gpu_capacity=gpu_capacity,
+        )
 
 
 __all__ = [

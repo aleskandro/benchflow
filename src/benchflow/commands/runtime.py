@@ -32,6 +32,7 @@ from ..orchestration import (
 from ..remote_jobs import remote_run_plan_json, run_remote_job
 from ..install import (
     BootstrapOptions,
+    Installer,
     reconcile_management_cluster_queue,
     run_bootstrap,
 )
@@ -61,7 +62,7 @@ from ..toolbox import (
     upload_artifact_directory,
     upload_plan_results,
 )
-from ..ui import detail, warning
+from ..ui import detail, step, ui_scope, warning
 from ..waiting import wait_for_completions, wait_for_endpoint
 from .shared import (
     invoke_handler,
@@ -240,13 +241,15 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             "--host-alias requires --target-kubeconfig together with --cluster-name"
         )
     if target_kubeconfig and cluster_name:
-        _apply_target_kubeconfig_secret(
-            namespace=namespace,
-            secret_name=cluster_name,
-            kubeconfig_path=Path(target_kubeconfig),
-            cluster_name=cluster_name,
-            host_aliases=host_aliases,
-        )
+        with ui_scope("[management-cluster]"):
+            step(f"Creating or updating target kubeconfig Secret for {cluster_name}")
+            _apply_target_kubeconfig_secret(
+                namespace=namespace,
+                secret_name=cluster_name,
+                kubeconfig_path=Path(target_kubeconfig),
+                cluster_name=cluster_name,
+                host_aliases=host_aliases,
+            )
     remote_target = bool(target_kubeconfig)
     install_tekton = (
         args.install_tekton
@@ -263,48 +266,55 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         if args.install_accelerator_prerequisites is not None
         else (single_cluster or remote_target)
     )
+    bootstrap_options = BootstrapOptions(
+        namespace=namespace,
+        single_cluster=single_cluster,
+        install_grafana=install_grafana,
+        install_tekton=install_tekton,
+        install_kueue=(single_cluster or not remote_target),
+        install_accelerator_prerequisites=install_accelerator_prerequisites,
+        install_models_storage=(single_cluster or remote_target),
+        install_results_storage=True,
+        target_kubeconfig=target_kubeconfig,
+        benchflow_image=benchflow_image,
+        models_storage_class=args.models_storage_class,
+        models_storage_size=args.models_size or "250Gi",
+        models_storage_access_mode=args.models_access_mode or "ReadWriteOnce",
+        results_storage_class=args.results_storage_class,
+        results_storage_size=args.results_size or "20Gi",
+        cluster_name=cluster_name,
+    )
+    defer_summary = bool(single_cluster or (target_kubeconfig and cluster_name))
     result = run_bootstrap(
         repo_root,
-        BootstrapOptions(
-            namespace=namespace,
-            single_cluster=single_cluster,
-            install_grafana=install_grafana,
-            install_tekton=install_tekton,
-            install_kueue=(single_cluster or not remote_target),
-            install_accelerator_prerequisites=install_accelerator_prerequisites,
-            install_models_storage=(single_cluster or remote_target),
-            install_results_storage=True,
-            target_kubeconfig=target_kubeconfig,
-            benchflow_image=benchflow_image,
-            models_storage_class=args.models_storage_class,
-            models_storage_size=args.models_size or "250Gi",
-            models_storage_access_mode=args.models_access_mode or "ReadWriteOnce",
-            results_storage_class=args.results_storage_class,
-            results_storage_size=args.results_size or "20Gi",
-        ),
+        bootstrap_options,
+        emit_summary=not defer_summary,
     )
     if result != 0:
         return result
 
     if single_cluster:
-        gpu_capacity = discover_cluster_gpu_capacity()
-        if gpu_capacity == 0:
-            warning(
-                "Discovered 0 GPUs while registering the local Kueue queue; rerun bootstrap once GPU resources are visible if this cluster should execute GPU workloads."
-            )
+        with ui_scope("[single-cluster]"):
+            gpu_capacity = discover_cluster_gpu_capacity()
+            if gpu_capacity == 0:
+                warning(
+                    "Discovered 0 GPUs while registering the local Kueue queue; rerun bootstrap once GPU resources are visible if this cluster should execute GPU workloads."
+                )
         reconcile_management_cluster_queue(
             repo_root,
             namespace=namespace,
             cluster_name=LOCAL_CLUSTER_QUEUE,
             gpu_capacity=gpu_capacity,
             benchflow_image=benchflow_image,
+            ui_label="[single-cluster]",
         )
     elif target_kubeconfig and cluster_name:
-        gpu_capacity = discover_cluster_gpu_capacity(target_kubeconfig)
-        if gpu_capacity == 0:
-            warning(
-                f"Discovered 0 GPUs in target cluster {cluster_name!r}; rerun bootstrap once GPU resources are visible if this target cluster should execute GPU workloads."
-            )
+        with ui_scope("[management-cluster]"):
+            gpu_capacity = discover_cluster_gpu_capacity(target_kubeconfig)
+            if gpu_capacity == 0:
+                warning(
+                    f"Discovered 0 GPUs in target cluster {cluster_name!r}; rerun bootstrap once GPU resources are visible if this target cluster should execute GPU workloads."
+                )
         reconcile_management_cluster_queue(
             repo_root,
             namespace=namespace,
@@ -312,6 +322,10 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             gpu_capacity=gpu_capacity,
             benchflow_image=benchflow_image,
         )
+    if defer_summary:
+        summary_installer = Installer(repo_root, bootstrap_options)
+        with ui_scope(summary_installer.ui_label):
+            summary_installer.print_summary()
     return result
 
 

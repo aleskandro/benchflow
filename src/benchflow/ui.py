@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterable
 
 try:
@@ -25,6 +27,16 @@ _console = (
 _error_console = (
     Console(stderr=True, soft_wrap=True, highlight=False) if RICH_AVAILABLE else None
 )
+_message_prefix: ContextVar[str] = ContextVar("benchflow_ui_message_prefix", default="")
+
+
+def _prefix_message(message: str) -> str:
+    prefix = _message_prefix.get().strip()
+    if not prefix:
+        return message
+    if not message:
+        return prefix
+    return f"{prefix} {message}"
 
 
 def emit(message: str = "", *, stderr: bool = False, end: str = "\n") -> None:
@@ -37,6 +49,7 @@ def emit(message: str = "", *, stderr: bool = False, end: str = "\n") -> None:
 
 
 def rule(title: str) -> None:
+    title = _prefix_message(title)
     if RICH_AVAILABLE:
         _console.rule(f"[bold cyan]{title}[/bold cyan]")
     else:
@@ -44,6 +57,7 @@ def rule(title: str) -> None:
 
 
 def panel(title: str, rows: Iterable[tuple[str, str]]) -> None:
+    title = _prefix_message(title)
     items = [(label, value) for label, value in rows if value]
     if not items:
         return
@@ -61,6 +75,7 @@ def panel(title: str, rows: Iterable[tuple[str, str]]) -> None:
 
 
 def step(message: str) -> None:
+    message = _prefix_message(message)
     if RICH_AVAILABLE:
         _console.print(f"[bold cyan]›[/bold cyan] {message}")
     else:
@@ -68,6 +83,7 @@ def step(message: str) -> None:
 
 
 def detail(message: str) -> None:
+    message = _prefix_message(message)
     if RICH_AVAILABLE:
         _console.print(f"  [dim]{message}[/dim]")
     else:
@@ -75,6 +91,7 @@ def detail(message: str) -> None:
 
 
 def success(message: str) -> None:
+    message = _prefix_message(message)
     if RICH_AVAILABLE:
         _console.print(f"[bold green]✓[/bold green] {message}")
     else:
@@ -82,6 +99,7 @@ def success(message: str) -> None:
 
 
 def warning(message: str) -> None:
+    message = _prefix_message(message)
     if RICH_AVAILABLE:
         _error_console.print(f"[bold yellow]![/bold yellow] {message}")
     else:
@@ -89,10 +107,23 @@ def warning(message: str) -> None:
 
 
 def error(message: str) -> None:
+    message = _prefix_message(message)
     if RICH_AVAILABLE:
         _error_console.print(f"[bold red]error[/bold red] {message}")
     else:
         emit(f"ERROR: {message}", stderr=True)
+
+
+@contextmanager
+def ui_scope(prefix: str):
+    normalized = str(prefix).strip()
+    previous = _message_prefix.get().strip()
+    combined = normalized if not previous else f"{previous} {normalized}"
+    token = _message_prefix.set(combined)
+    try:
+        yield
+    finally:
+        _message_prefix.reset(token)
 
 
 def configure_logging(level: str = "INFO") -> None:
