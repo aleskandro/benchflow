@@ -26,6 +26,14 @@ on:
         description: "Optional persistent image tag to keep outside automatic cleanup"
         required: false
         type: string
+      base_image_repository:
+        description: "Optional base image repository override for manual builds"
+        required: false
+        type: string
+      base_image_tag:
+        description: "Optional base image tag override for manual builds"
+        required: false
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -47,6 +55,8 @@ jobs:
       cleanup_pattern: ${{ steps.resolve.outputs.cleanup_pattern }}
       cleanup_keep: ${{ steps.resolve.outputs.cleanup_keep }}
       persistent_tag: ${{ steps.resolve.outputs.persistent_tag }}
+      base_image_repository: ${{ steps.resolve.outputs.base_image_repository }}
+      base_image_tag: ${{ steps.resolve.outputs.base_image_tag }}
     steps:
       - name: Checkout repository metadata
         if: github.event_name == 'push'
@@ -69,6 +79,8 @@ jobs:
           CLEANUP_PATTERN=""
           CLEANUP_KEEP=0
           PERSISTENT_TAG=""
+          BASE_IMAGE_REPOSITORY=""
+          BASE_IMAGE_TAG=""
 
           if [[ "${GITHUB_EVENT_NAME}" == "issue_comment" ]]; then
             BODY="$(jq -r '.comment.body // ""' "${GITHUB_EVENT_PATH}")"
@@ -97,6 +109,8 @@ jobs:
             CHECKOUT_REF="${GITHUB_SHA}"
             BUILD_CHANNEL="manual"
             PERSISTENT_TAG="$(jq -r '.inputs.tag // ""' "${GITHUB_EVENT_PATH}")"
+            BASE_IMAGE_REPOSITORY="$(jq -r '.inputs.base_image_repository // ""' "${GITHUB_EVENT_PATH}")"
+            BASE_IMAGE_TAG="$(jq -r '.inputs.base_image_tag // ""' "${GITHUB_EVENT_PATH}")"
             if [[ -n "${PERSISTENT_TAG}" ]]; then
               if [[ ! "${PERSISTENT_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
                 echo "Invalid manual tag: ${PERSISTENT_TAG}" >&2
@@ -137,6 +151,8 @@ jobs:
             echo "cleanup_pattern=${CLEANUP_PATTERN}"
             echo "cleanup_keep=${CLEANUP_KEEP}"
             echo "persistent_tag=${PERSISTENT_TAG}"
+            echo "base_image_repository=${BASE_IMAGE_REPOSITORY}"
+            echo "base_image_tag=${BASE_IMAGE_TAG}"
           } >> "${GITHUB_OUTPUT}"
 
   build-images:
@@ -207,16 +223,31 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Build BenchFlow image
+        env:
+          BASE_IMAGE_REPOSITORY: ${{ needs.resolve-build.outputs.base_image_repository }}
+          BASE_IMAGE_TAG: ${{ needs.resolve-build.outputs.base_image_tag }}
         run: |
           set -euo pipefail
 
           LOCAL_IMAGE="local/benchflow:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RESOLVED_BASE_IMAGE_REPOSITORY="${BASE_IMAGE_REPOSITORY:-ghcr.io/albertoperdomo2/guidellm}"
+          RESOLVED_BASE_IMAGE_TAG="${BASE_IMAGE_TAG:-nightly}"
+          RESOLVED_BASE_IMAGE="${RESOLVED_BASE_IMAGE_REPOSITORY}:${RESOLVED_BASE_IMAGE_TAG}"
+          RESOLVED_GUIDELLM_VERSION_LABEL="albertoperdomo2-nightly"
+          if [[ -n "${BASE_IMAGE_REPOSITORY}" || -n "${BASE_IMAGE_TAG}" ]]; then
+            RESOLVED_GUIDELLM_VERSION_LABEL="${RESOLVED_BASE_IMAGE}"
+          fi
+
           podman build \
             -f build/Containerfile \
+            --build-arg GUIDELLM_IMAGE_REPOSITORY="${RESOLVED_BASE_IMAGE_REPOSITORY}" \
+            --build-arg GUIDELLM_IMAGE_TAG="${RESOLVED_BASE_IMAGE_TAG}" \
+            --build-arg GUIDELLM_VERSION_LABEL="${RESOLVED_GUIDELLM_VERSION_LABEL}" \
             -t "${LOCAL_IMAGE}" \
             .
 
           echo "LOCAL_IMAGE=${LOCAL_IMAGE}" >> "${GITHUB_ENV}"
+          echo "RESOLVED_BASE_IMAGE=${RESOLVED_BASE_IMAGE}" >> "${GITHUB_ENV}"
 
       - name: Push BenchFlow images
         run: |
@@ -232,6 +263,9 @@ jobs:
       - name: Image summary
         run: |
           echo "## Built Images" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Base image: \`${RESOLVED_BASE_IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           while IFS= read -r tag; do
             [[ -z "${tag}" ]] && continue
             echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:${tag}\`" >> "$GITHUB_STEP_SUMMARY"
