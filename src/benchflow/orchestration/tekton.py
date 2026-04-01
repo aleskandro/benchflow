@@ -12,6 +12,7 @@ from typing import Any
 from ..cluster import CommandError, require_command, run_command, run_json_command
 from ..contracts import ExecutionSummary, ResolvedRunPlan, ValidationError
 from ..kueue import execution_labels_for_matrix, execution_labels_for_plan
+from .matrix_payloads import RUN_PLANS_ANNOTATION, RUN_PLANS_CONFIGMAP_PARAM
 from ..ui import detail, step, success, warning
 
 _SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
@@ -241,6 +242,7 @@ def render_matrix_pipelinerun(
         "kind": "PipelineRun",
         "metadata": {
             "generateName": f"{first_plan.metadata.name}-matrix-",
+            "annotations": {RUN_PLANS_ANNOTATION: run_plans_json},
             "labels": {
                 "app.kubernetes.io/name": "benchflow",
                 "benchflow.io/experiment": first_plan.metadata.name,
@@ -256,7 +258,7 @@ def render_matrix_pipelinerun(
             "ttlSecondsAfterFinished": next(iter(ttl_values)),
             "timeouts": {"pipeline": _matrix_timeout(plans)},
             "params": [
-                {"name": "RUN_PLANS", "value": run_plans_json},
+                {"name": RUN_PLANS_CONFIGMAP_PARAM, "value": ""},
                 *(
                     [{"name": "BENCHFLOW_IMAGE", "value": benchflow_image}]
                     if benchflow_image

@@ -12,9 +12,9 @@ spec:
     - name: target-kubeconfig
       description: Optional kubeconfig for remote target-cluster operations
   params:
-    - name: RUN_PLANS
+    - name: RUN_PLANS_CONFIGMAP
       type: string
-      description: JSON array of resolved immutable RunPlans.
+      description: ConfigMap name containing the JSON array of resolved immutable RunPlans.
     - name: BENCHFLOW_IMAGE
       type: string
       default: ghcr.io/albertoperdomo2/benchflow:latest
@@ -29,8 +29,8 @@ spec:
       params:
         - name: IMAGE
           value: $(params.BENCHFLOW_IMAGE)
-        - name: RUN_PLANS
-          value: $(params.RUN_PLANS)
+        - name: RUN_PLANS_CONFIGMAP
+          value: $(params.RUN_PLANS_CONFIGMAP)
         - name: CHILD_PIPELINE_NAME
           value: $(params.CHILD_PIPELINE_NAME)
       workspaces:

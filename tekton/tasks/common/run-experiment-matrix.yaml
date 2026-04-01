@@ -10,7 +10,7 @@ spec:
     - name: IMAGE
       type: string
       default: ghcr.io/albertoperdomo2/benchflow:latest
-    - name: RUN_PLANS
+    - name: RUN_PLANS_CONFIGMAP
       type: string
     - name: CHILD_PIPELINE_NAME
       type: string
@@ -27,15 +27,15 @@ spec:
           value: $(params.IMAGE)
         - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
           value: $(workspaces.target-kubeconfig.path)
-      script: |
-        #!/bin/sh
-        set -eu
+      command:
+        - sh
+      args:
+        - -ceu
+        - |
+          run_plans_path="/tmp/run-plans.json"
+          oc get configmap "$(params.RUN_PLANS_CONFIGMAP)" \
+            -o jsonpath='{.data.run-plans\.json}' > "${run_plans_path}"
 
-        run_plans_path="/tmp/run-plans.json"
-        cat > "${run_plans_path}" <<'__BENCHFLOW_RUN_PLANS__'
-        $(params.RUN_PLANS)
-        __BENCHFLOW_RUN_PLANS__
-
-        exec bflow task run-experiment-matrix \
-          --run-plans-file "${run_plans_path}" \
-          --child-pipeline-name "$(params.CHILD_PIPELINE_NAME)"
+          exec bflow task run-experiment-matrix \
+            --run-plans-file "${run_plans_path}" \
+            --child-pipeline-name "$(params.CHILD_PIPELINE_NAME)"

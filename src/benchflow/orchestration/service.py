@@ -25,6 +25,12 @@ from ..kueue import (
 )
 from ..loaders import load_run_plan_data, load_run_plan_file
 from ..models import sanitize_name
+from .matrix_payloads import (
+    adopt_matrix_run_plans_configmap,
+    delete_matrix_run_plans_configmap,
+    materialize_matrix_run_plans_configmap,
+    matrix_run_plans_configmap_name_from_labels,
+)
 from ..setup import load_setup_state
 from ..toolbox import setup_platform, teardown_platform
 from ..ui import detail, step, success, warning
@@ -194,6 +200,12 @@ def cancel_execution(namespace: str, name: str) -> None:
             (workload.get("metadata", {}) or {}).get("labels", {}) or {}
         ),
     )
+    delete_matrix_run_plans_configmap(
+        namespace,
+        matrix_run_plans_configmap_name_from_labels(
+            (workload.get("metadata", {}) or {}).get("labels", {}) or {}
+        ),
+    )
     delete_reservation_workload(
         namespace, str((workload.get("metadata", {}) or {}).get("name") or "")
     )
@@ -268,13 +280,31 @@ def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
     }
     metadata = manifest.setdefault("metadata", {})
     metadata["namespace"] = namespace
+    matrix_run_plans_configmap = ""
     if not reservation_required_for_labels(labels):
-        submitted = create_manifest(
-            json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
-        )
+        try:
+            manifest, matrix_run_plans_configmap = (
+                materialize_matrix_run_plans_configmap(
+                    namespace=namespace,
+                    execution_name=execution_name,
+                    manifest=manifest,
+                )
+            )
+            submitted = create_manifest(
+                json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
+            )
+        except BaseException:
+            if matrix_run_plans_configmap:
+                delete_matrix_run_plans_configmap(namespace, matrix_run_plans_configmap)
+            raise
         name = submitted.get("metadata", {}).get("name")
         if not name:
             raise ValidationError("execution submission returned no name")
+        adopt_matrix_run_plans_configmap(
+            namespace=namespace,
+            configmap_name=matrix_run_plans_configmap,
+            owner_payload=submitted,
+        )
         return str(name)
 
     cluster_name = queue_name_from_labels(labels)
@@ -285,6 +315,11 @@ def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
     configmap_name = ""
     reservation_name = ""
     try:
+        manifest, matrix_run_plans_configmap = materialize_matrix_run_plans_configmap(
+            namespace=namespace,
+            execution_name=execution_name,
+            manifest=manifest,
+        )
         configmap_name = create_submission_configmap(
             namespace=namespace,
             execution_name=execution_name,
@@ -306,6 +341,8 @@ def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
             delete_reservation_workload(namespace, reservation_name)
         if configmap_name:
             delete_submission_configmap(namespace, configmap_name)
+        if matrix_run_plans_configmap:
+            delete_matrix_run_plans_configmap(namespace, matrix_run_plans_configmap)
         raise
 
 

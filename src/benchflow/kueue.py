@@ -21,6 +21,10 @@ from .cluster import (
 )
 from .contracts import ExecutionSummary, ResolvedRunPlan, ValidationError
 from .models import sanitize_name
+from .orchestration.matrix_payloads import (
+    adopt_matrix_run_plans_configmap,
+    matrix_run_plans_configmap_name_from_labels,
+)
 from .ui import detail, step, success, warning
 
 KUEUE_NAMESPACE = "kueue-system"
@@ -821,8 +825,15 @@ def _create_execution_from_workload(namespace: str, workload: dict[str, Any]) ->
     metadata["name"] = execution_name
     metadata["namespace"] = namespace
     metadata.pop("generateName", None)
-    create_manifest(
+    submitted = create_manifest(
         json.dumps(manifest, separators=(",", ":"), sort_keys=True), namespace
+    )
+    adopt_matrix_run_plans_configmap(
+        namespace=namespace,
+        configmap_name=matrix_run_plans_configmap_name_from_labels(
+            metadata.get("labels", {}) or {}
+        ),
+        owner_payload=submitted,
     )
     detail(f"Created PipelineRun {execution_name} from reservation workload")
     delete_submission_configmap(namespace, configmap_name)
