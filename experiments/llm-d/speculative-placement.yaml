@@ -1,19 +1,27 @@
 apiVersion: benchflow.io/v1alpha1
 kind: Experiment
 metadata:
-  name: redhatai-llama-33
+  name: speculative-placement
 spec:
   model:
-    name: RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
+    name:
+      - RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
+      # - openai/gpt-oss-120b
   deployment_profile:
-    - llm-d-inference-scheduling
     - llm-d-precise-prefix-cache
   benchmark_profile:
     - guidellm-multi-turn
   metrics_profile: detailed
+  mlflow:
+    tags:
+      accelerator: H200
+      version: "llm-d-v0.4.0 (v0.6.0-speculative-placement)"
   namespace: benchflow
   execution:
     timeout: 8h
   overrides:
     images:
       scheduler: quay.io/vmaroon/llm-d-inference-scheduler:v0.6-speculative
+#    benchmark:
+#      request_type: text_completions
+# XXX: openai/gpt-oss-120b needs the text_completions endpoint

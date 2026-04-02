@@ -1,11 +1,10 @@
 apiVersion: benchflow.io/v1alpha1
 kind: Experiment
 metadata:
-  name: llm-d-release
+  name: gpt-oss-120b-llm-d-release
 spec:
   model:
     name:
-      - RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
       - openai/gpt-oss-120b
   deployment_profile:
     - llm-d-inference-scheduling
@@ -15,9 +14,12 @@ spec:
     - guidellm-concurrent-heavy-heterogeneous
     - guidellm-multi-turn
   metrics_profile: detailed
+  mlflow:
+    tags:
+      accelerator: H200
   namespace: benchflow
   execution:
     timeout: 8h
   overrides:
-    images:
-      scheduler: quay.io/rh-ee-aperdomo/llm-d-inference-scheduler:v0.4.0
+    benchmark:
+      request_type: text_completions
