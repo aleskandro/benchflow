@@ -28,10 +28,15 @@ spec:
   workspaces:
     - name: artifacts
       description: Workspace containing the full per-run BenchFlow bundle
+    - name: target-kubeconfig
+      description: Optional kubeconfig for remote target-cluster operations
+      optional: true
   steps:
     - name: upload
       image: $(params.IMAGE)
       env:
+        - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
+          value: $(workspaces.target-kubeconfig.path)
         - name: MLFLOW_TRACKING_URI
           valueFrom:
             secretKeyRef:

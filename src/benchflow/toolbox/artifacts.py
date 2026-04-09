@@ -41,15 +41,6 @@ def collect_plan_artifacts(
 ) -> Path:
     if context.artifacts_dir is None:
         raise ValidationError("artifacts collection requires an artifacts directory")
-    if plan.deployment.target.discovery == "static":
-        return collect_artifacts(
-            plan,
-            artifacts_dir=context.artifacts_dir,
-            execution_name=context.execution_name or "",
-            include_execution_logs=True,
-            include_workload=False,
-            include_manifests=False,
-        )
     if plan.target_cluster.enabled():
         execution_pod_count = 0
         if context.execution_name:
@@ -87,6 +78,15 @@ def collect_plan_artifacts(
             uploaded_to_mlflow=False,
         )
         return context.artifacts_dir
+    if plan.deployment.target.discovery == "static" and not plan.stages.deploy:
+        return collect_artifacts(
+            plan,
+            artifacts_dir=context.artifacts_dir,
+            execution_name=context.execution_name or "",
+            include_execution_logs=True,
+            include_workload=False,
+            include_manifests=False,
+        )
     return collect_artifacts(
         plan,
         artifacts_dir=context.artifacts_dir,

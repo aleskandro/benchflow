@@ -243,6 +243,8 @@ spec:
         - name: artifacts
           workspace: results
           subPath: $(context.pipelineRun.name)
+        - name: target-kubeconfig
+          workspace: target-kubeconfig
 
   finally:
     - name: cleanup

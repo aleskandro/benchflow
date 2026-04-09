@@ -120,20 +120,22 @@ def _merge_artifact_tree(source_dir: Path, target_dir: Path) -> None:
         shutil.copy2(child, target)
 
 
-def _materialize_remote_artifacts_if_needed(
+def _materialize_remote_tree_if_needed(
     plan: ResolvedRunPlan,
-    artifacts_dir: Path,
-) -> None:
-    reference_path = artifacts_dir / "remote-target-artifacts.json"
+    *,
+    reference_path: Path,
+    local_dir: Path,
+    label: str,
+) -> bool:
     if not reference_path.exists():
-        return
+        return False
 
     reference = _load_json_file(reference_path)
     remote_path = str(reference.get("remote_path") or "").strip()
     if not remote_path:
-        return
+        return False
 
-    step(f"Copying remote collected artifacts from {remote_path}")
+    step(f"Copying remote collected {label} from {remote_path}")
     temp_root = Path(tempfile.mkdtemp(prefix="benchflow-remote-artifacts-"))
     try:
         copy_remote_results_directory(
@@ -141,9 +143,37 @@ def _materialize_remote_artifacts_if_needed(
             remote_path=remote_path,
             local_dir=temp_root,
         )
-        _merge_artifact_tree(temp_root, artifacts_dir)
+        _merge_artifact_tree(temp_root, local_dir)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+    return True
+
+
+def _materialize_remote_artifacts_if_needed(
+    plan: ResolvedRunPlan,
+    artifacts_dir: Path,
+) -> bool:
+    return _materialize_remote_tree_if_needed(
+        plan,
+        reference_path=artifacts_dir / "remote-target-artifacts.json",
+        local_dir=artifacts_dir,
+        label="artifacts",
+    )
+
+
+def _materialize_remote_metrics_if_needed(
+    plan: ResolvedRunPlan,
+    artifacts_dir: Path,
+) -> bool:
+    metrics_dir = artifacts_dir / "metrics"
+    if (metrics_dir / "metrics_summary.json").exists():
+        return False
+    return _materialize_remote_tree_if_needed(
+        plan,
+        reference_path=metrics_dir / "remote-target-metrics.json",
+        local_dir=metrics_dir,
+        label="metrics",
+    )
 
 
 def _generate_post_run_report(artifacts_dir: Path) -> Path | None:
@@ -359,6 +389,7 @@ def upload_to_mlflow(
     client = mlflow.tracking.MlflowClient()
     detail(f"MLflow tracking URI: {explicit_tracking_uri}")
     _materialize_remote_artifacts_if_needed(plan, artifacts_dir)
+    _materialize_remote_metrics_if_needed(plan, artifacts_dir)
     _generate_post_run_report(artifacts_dir)
     grafana_base_url = grafana_url or _discover_grafana_base_url(
         plan.deployment.namespace
