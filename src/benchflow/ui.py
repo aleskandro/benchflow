@@ -128,6 +128,8 @@ def ui_scope(prefix: str):
 
 def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
+    for noisy_logger in ("matplotlib", "fontTools"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     if getattr(root, "_benchflow_configured", False):
         root.setLevel(level.upper())
         return
