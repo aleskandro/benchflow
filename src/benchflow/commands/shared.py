@@ -510,9 +510,9 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
         click.option(
             "--target-url",
             help=(
-                "Benchmark an existing endpoint base URL instead of resolving a "
-                "deployed target. BenchFlow automatically disables download, "
-                "deploy, and cleanup for this path."
+                "Use an existing endpoint base URL instead of resolving a deployed "
+                "target. For experiment submissions, BenchFlow automatically "
+                "disables download, deploy, and cleanup for this path."
             ),
         ),
         click.option(

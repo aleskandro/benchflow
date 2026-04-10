@@ -1491,7 +1491,6 @@ def wait_group() -> None:
     short_help="Wait for the deployment endpoint",
 )
 @runtime_plan_source_options
-@click.option("--target-url", help="Override the target base URL to probe.")
 @click.option("--endpoint-path", help="Endpoint path to probe.")
 @click.option(
     "--timeout-seconds",
@@ -1522,7 +1521,6 @@ def wait_endpoint_command(**kwargs: object) -> int:
     short_help="Wait for completions to work",
 )
 @runtime_plan_source_options
-@click.option("--target-url", help="Override the target base URL to probe.")
 @click.option(
     "--endpoint-path",
     default="/v1/completions",
@@ -1567,7 +1565,6 @@ def benchmark_group() -> None:
     short_help="Run a GuideLLM benchmark",
 )
 @runtime_plan_source_options
-@click.option("--target-url", help="Override the benchmark target URL.")
 @click.option(
     "--output-dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
