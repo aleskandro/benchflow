@@ -2096,7 +2096,7 @@ def task_assert_status_command(**kwargs: object) -> int:
     "run-experiment-matrix",
     help=(
         "Internal command used by the execution backend to run a cartesian product of resolved "
-        "RunPlans sequentially in the cluster."
+        "RunPlans as child executions in the cluster."
     ),
     short_help="Run a matrix of child executions",
 )

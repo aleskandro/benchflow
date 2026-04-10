@@ -402,8 +402,7 @@ Override semantics:
 - today `requirements.min_max_model_len` raises the effective `--max-model-len` for that resolved run when the benchmark needs a larger context window than the deployment default
 - list-valued `model.name`, profile refs, and override axes produce a cartesian-product matrix
 - matrix children are submitted as independent child executions
-- `rhoai` child executions can be admitted in parallel when target-cluster GPU capacity allows it
-- `llm-d` child executions are submitted sequentially because the upstream GAIE deployment still creates shared namespaced resources that collide across parallel child deployments
+- `rhoai` and `llm-d` child executions can be admitted in parallel when target-cluster GPU capacity allows it
 
 Target-cluster semantics:
 
@@ -725,11 +724,18 @@ Current behavior:
 - each combination becomes one normal child `RunPlan`
 - each child `RunPlan` becomes one normal child execution
 - `bflow experiment run` submits one supervisor execution
-- `rhoai` child executions are submitted together and Kueue can admit them in parallel
-- `llm-d` child executions are submitted sequentially to avoid upstream GAIE resource-name collisions during parallel deployment
+- `rhoai` and `llm-d` child executions are submitted together and Kueue can admit them in parallel
 - each child benchmark still creates its own MLflow run
 - if every child combination uses `llm-d` and keeps cleanup enabled, the
   supervisor sets up llm-d once and tears it down once at the end
+
+Name-length note for `llm-d` with Istio:
+
+- the llm-d guide derives the Gateway name as `infra-<release>-inference-gateway`
+- Istio appends `-istio` when creating backing resources and uses that value as a Kubernetes label
+- Kubernetes label values are limited to 63 characters
+- keep llm-d experiment names short enough that `infra-<release>-inference-gateway-istio` is no more than 63 characters
+- if the Gateway is present but the backing Istio Deployment or Service is missing, check for label-length validation errors in the Istio controller events
 
 So this is safe to submit and walk away from:
 

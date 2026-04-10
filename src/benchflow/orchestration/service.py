@@ -392,7 +392,7 @@ def run_matrix_supervisor(
             plans[0],
             context=ExecutionContext(state_path=setup_state_path),
         )
-    submit_children_in_parallel = matrix_platform == "rhoai"
+    submit_children_in_parallel = matrix_platform in {"llm-d", "rhoai"}
 
     def wait_for_children(child_names: list[str]) -> None:
         if not child_names:

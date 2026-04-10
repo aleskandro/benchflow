@@ -357,8 +357,8 @@ def experiment_render_deployment(**kwargs: object) -> int:
     "run",
     help=(
         "Submit an experiment to the cluster and optionally follow it. "
-        "Matrix experiments submit a supervisor execution that runs child "
-        "combinations sequentially."
+        "Matrix experiments submit a supervisor execution that submits child "
+        "combinations and lets Kueue admit them when capacity is available."
     ),
     short_help="Submit an experiment as an execution",
 )

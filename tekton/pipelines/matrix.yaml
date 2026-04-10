@@ -7,7 +7,7 @@ metadata:
 spec:
   description: >-
     BenchFlow matrix supervisor pipeline. It consumes a pre-resolved array of
-    child RunPlans and runs each child PipelineRun sequentially in the cluster.
+    child RunPlans and submits child PipelineRuns for Kueue admission.
   workspaces:
     - name: target-kubeconfig
       description: Optional kubeconfig for remote target-cluster operations

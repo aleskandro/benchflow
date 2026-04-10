@@ -4,8 +4,8 @@ metadata:
   name: run-experiment-matrix
 spec:
   description: >-
-    Run a pre-resolved cartesian product of BenchFlow RunPlans sequentially by
-    creating one child PipelineRun at a time and waiting for it to finish.
+    Run a pre-resolved cartesian product of BenchFlow RunPlans by creating child
+    PipelineRuns and waiting for them to finish.
   params:
     - name: IMAGE
       type: string

@@ -21,6 +21,10 @@ from ..models import ResolvedRunPlan
 from ..repository import clone_repo
 from ..ui import detail, step, success
 
+_LLMD_INFERENCE_SERVING_LABEL = "llm-d.ai/inferenceServing"
+_LLMD_MODEL_LABEL = "llm-d.ai/model"
+_BENCHFLOW_RELEASE_LABEL = "benchflow.io/release"
+
 
 def _release_exists(namespace: str, release_name: str) -> bool:
     helm_json = run_json_command(["helm", "list", "-n", namespace, "-o", "json"])
@@ -94,6 +98,13 @@ def _ensure_container(values: dict[str, Any]) -> dict[str, Any]:
     return containers[0]
 
 
+def _release_match_labels(release_name: str) -> dict[str, str]:
+    return {
+        _LLMD_INFERENCE_SERVING_LABEL: "true",
+        _LLMD_MODEL_LABEL: release_name,
+    }
+
+
 def _split_image_reference(image: str) -> tuple[str, str, str]:
     trimmed = image.strip()
     if not trimmed:
@@ -133,6 +144,11 @@ def _patch_values(plan: ResolvedRunPlan, values_file: Path) -> dict[str, Any]:
     model_artifacts["name"] = plan.model.name
     model_artifacts["uri"] = _model_uri(plan)
     model_artifacts["authSecretName"] = "huggingface-token"
+    labels = model_artifacts.setdefault("labels", {})
+    if not isinstance(labels, dict):
+        labels = {}
+        model_artifacts["labels"] = labels
+    labels.update(_release_match_labels(plan.deployment.release_name))
 
     decode["replicas"] = runtime.replicas
     decode.setdefault("parallelism", {})
@@ -196,6 +212,13 @@ def _patch_scheduler_values(plan: ResolvedRunPlan, values_file: Path) -> None:
     prometheus = monitoring.setdefault("prometheus", {})
     auth = prometheus.setdefault("auth", {})
     auth["secretName"] = secret_name
+    inference_pool = values.setdefault("inferencePool", {})
+    model_servers = inference_pool.setdefault("modelServers", {})
+    match_labels = model_servers.setdefault("matchLabels", {})
+    if not isinstance(match_labels, dict):
+        match_labels = {}
+        model_servers["matchLabels"] = match_labels
+    match_labels.update(_release_match_labels(plan.deployment.release_name))
 
     if plan.deployment.scheduler_image:
         image = inference_extension.setdefault("image", {})
@@ -223,6 +246,7 @@ def _apply_pipeline_labels(
     labels["benchflow.io/execution-backend"] = execution_backend
     labels["benchflow/managed-by"] = "pipeline"
     labels["benchflow/release"] = release_name
+    labels[_BENCHFLOW_RELEASE_LABEL] = release_name
 
 
 def _capture_manifests(
@@ -421,12 +445,10 @@ def _verify_deployment(plan: ResolvedRunPlan, timeout_seconds: int) -> None:
             namespace, f"inferencepool=gaie-{release_name}-epp", kubectl_cmd
         )
         ms_ready, ms_ready_count, ms_total = _pods_ready(
-            namespace, "llm-d.ai/inference-serving=true", kubectl_cmd
+            namespace,
+            f"{_LLMD_INFERENCE_SERVING_LABEL}=true,{_LLMD_MODEL_LABEL}={release_name}",
+            kubectl_cmd,
         )
-        if not ms_ready:
-            ms_ready, ms_ready_count, ms_total = _pods_ready(
-                namespace, "llm-d.ai/inferenceServing=true", kubectl_cmd
-            )
         gateway_ready = _gateway_exists(namespace, release_name, kubectl_cmd)
         httproute_ready = _httproute_exists(namespace, release_name, kubectl_cmd)
         snapshot = (epp_ready_count, ms_ready_count, gateway_ready, httproute_ready)
