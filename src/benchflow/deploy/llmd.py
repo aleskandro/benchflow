@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -25,6 +26,21 @@ from ..ui import detail, step, success
 _LLMD_INFERENCE_SERVING_LABEL = "llm-d.ai/inferenceServing"
 _LLMD_MODEL_LABEL = "llm-d.ai/model"
 _BENCHFLOW_RELEASE_LABEL = "benchflow.io/release"
+
+
+def _llmd_guide_layout(plan: ResolvedRunPlan) -> dict[str, str]:
+    mode = str(plan.deployment.mode or "").strip()
+    if mode == "precise-prefix-cache":
+        return {
+            "guide_dirname": "precise-prefix-cache-aware",
+            "model_values_relpath": "ms-kv-events/values.yaml",
+            "scheduler_values_relpath": "gaie-kv-events/values.yaml",
+        }
+    return {
+        "guide_dirname": "inference-scheduling",
+        "model_values_relpath": "ms-inference-scheduling/values.yaml",
+        "scheduler_values_relpath": "gaie-inference-scheduling/values.yaml",
+    }
 
 
 def _release_exists(namespace: str, release_name: str) -> bool:
@@ -188,20 +204,71 @@ def _patch_values(plan: ResolvedRunPlan, values_file: Path) -> dict[str, Any]:
     container["env"] = env
 
     container["image"] = runtime.image
-    container["modelCommand"] = "custom"
-    container["command"] = ["vllm", "serve"]
+    if plan.deployment.mode == "precise-prefix-cache":
+        existing_args = list(container.get("args") or [])
+        kv_events_config: dict[str, Any] | None = None
+        preserved_args: list[str] = []
+        index = 0
+        while index < len(existing_args):
+            item = str(existing_args[index])
+            if item == "--kv-events-config" and index + 1 < len(existing_args):
+                try:
+                    kv_events_config = json.loads(str(existing_args[index + 1]))
+                except json.JSONDecodeError:
+                    kv_events_config = None
+                index += 2
+                continue
+            preserved_args.append(item)
+            index += 1
 
-    args: list[str] = [
-        _model_mount_path(plan),
-        "--port",
-        str(port),
-        "--tensor-parallel-size",
-        str(runtime.tensor_parallelism),
-        "--served-model-name",
-        plan.model.name,
-    ]
-    args.extend(runtime.vllm_args)
-    container["args"] = args
+        if kv_events_config is None:
+            kv_events_config = {
+                "enable_kv_cache_events": True,
+                "publisher": "zmq",
+                "endpoint": (
+                    "tcp://gaie-$(GAIE_RELEASE_NAME_POSTFIX)-epp."
+                    "$(NAMESPACE).svc.cluster.local:5557"
+                ),
+                "topic": f"kv@$(POD_IP):{port}@{plan.model.name}",
+            }
+        else:
+            kv_events_config["endpoint"] = (
+                "tcp://gaie-$(GAIE_RELEASE_NAME_POSTFIX)-epp."
+                "$(NAMESPACE).svc.cluster.local:5557"
+            )
+            kv_events_config["topic"] = f"kv@$(POD_IP):{port}@{plan.model.name}"
+
+        args = [
+            _model_mount_path(plan),
+            "--port",
+            str(port),
+            "--tensor-parallel-size",
+            str(runtime.tensor_parallelism),
+            "--served-model-name",
+            plan.model.name,
+            *preserved_args,
+            "--kv-events-config",
+            json.dumps(kv_events_config, separators=(",", ":")),
+            *runtime.vllm_args,
+        ]
+        container["modelCommand"] = "custom"
+        container["command"] = ["vllm", "serve"]
+        container["args"] = args
+    else:
+        container["modelCommand"] = "custom"
+        container["command"] = ["vllm", "serve"]
+
+        args = [
+            _model_mount_path(plan),
+            "--port",
+            str(port),
+            "--tensor-parallel-size",
+            str(runtime.tensor_parallelism),
+            "--served-model-name",
+            plan.model.name,
+            *runtime.vllm_args,
+        ]
+        container["args"] = args
 
     container.setdefault("volumeMounts", [])
     for volume_mount in container["volumeMounts"]:
@@ -226,6 +293,15 @@ def _patch_scheduler_values(plan: ResolvedRunPlan, values_file: Path) -> None:
     prometheus = monitoring.setdefault("prometheus", {})
     auth = prometheus.setdefault("auth", {})
     auth["secretName"] = secret_name
+    for env_entry in inference_extension.get("env", []) or []:
+        if str(env_entry.get("name") or "") == "HF_TOKEN" and isinstance(
+            env_entry.get("valueFrom"), dict
+        ):
+            secret_ref = (env_entry.get("valueFrom", {}) or {}).get(
+                "secretKeyRef", {}
+            ) or {}
+            secret_ref["name"] = "huggingface-token"
+            env_entry["valueFrom"]["secretKeyRef"] = secret_ref
     inference_pool = values.setdefault("inferencePool", {})
     model_servers = inference_pool.setdefault("modelServers", {})
     match_labels = model_servers.setdefault("matchLabels", {})
@@ -233,6 +309,31 @@ def _patch_scheduler_values(plan: ResolvedRunPlan, values_file: Path) -> None:
         match_labels = {}
         model_servers["matchLabels"] = match_labels
     match_labels.update(_release_match_labels(plan.deployment.release_name))
+
+    if plan.deployment.mode == "precise-prefix-cache":
+        plugins_config_name = str(
+            inference_extension.get("pluginsConfigFile") or ""
+        ).strip()
+        plugins_custom_config = inference_extension.setdefault(
+            "pluginsCustomConfig", {}
+        )
+        raw_plugins_config = str(plugins_custom_config.get(plugins_config_name) or "")
+        if raw_plugins_config:
+            plugins_payload = yaml.safe_load(raw_plugins_config) or {}
+            for plugin in plugins_payload.get("plugins", []) or []:
+                if str(plugin.get("type") or "") == "tokenizer":
+                    parameters = plugin.setdefault("parameters", {})
+                    parameters["modelName"] = plan.model.name
+                if str(plugin.get("type") or "") == "precise-prefix-cache-scorer":
+                    parameters = plugin.setdefault("parameters", {})
+                    indexer_config = parameters.setdefault("indexerConfig", {})
+                    tokenizers_pool = indexer_config.setdefault(
+                        "tokenizersPoolConfig", {}
+                    )
+                    tokenizers_pool["modelName"] = plan.model.name
+            plugins_custom_config[plugins_config_name] = yaml.safe_dump(
+                plugins_payload, sort_keys=False
+            )
 
     if plan.deployment.scheduler_image:
         image = inference_extension.setdefault("image", {})
@@ -264,13 +365,18 @@ def _apply_pipeline_labels(
 
 
 def _capture_manifests(
-    guide_dir: Path, manifests_dir: Path, namespace: str, env: dict[str, str]
+    guide_dir: Path,
+    manifests_dir: Path,
+    namespace: str,
+    env: dict[str, str],
+    *,
+    model_values_relpath: str,
 ) -> None:
     manifests_dir.mkdir(parents=True, exist_ok=True)
     rendered_dir = manifests_dir / "rendered"
     rendered_dir.mkdir(parents=True, exist_ok=True)
     rendered_path = rendered_dir / "manifests.yaml"
-    values_path = guide_dir / "ms-inference-scheduling" / "values.yaml"
+    values_path = guide_dir / Path(model_values_relpath)
 
     result = run_command(
         ["helmfile", "-e", env["HELMFILE_ENVIRONMENT"], "template", "-n", namespace],
@@ -532,9 +638,10 @@ def deploy_llmd(
         delete_existing=True,
     )
 
-    guide_dir = checkout_dir / "guides" / "inference-scheduling"
-    values_file = guide_dir / "ms-inference-scheduling" / "values.yaml"
-    scheduler_values_file = guide_dir / "gaie-inference-scheduling" / "values.yaml"
+    guide_layout = _llmd_guide_layout(plan)
+    guide_dir = checkout_dir / "guides" / guide_layout["guide_dirname"]
+    values_file = guide_dir / Path(guide_layout["model_values_relpath"])
+    scheduler_values_file = guide_dir / Path(guide_layout["scheduler_values_relpath"])
     if not values_file.exists():
         raise CommandError(f"expected llm-d guide file not found: {values_file}")
     if not scheduler_values_file.exists():
@@ -570,7 +677,13 @@ def deploy_llmd(
 
     if manifests_dir is not None:
         step(f"Capturing rendered manifests in {manifests_dir}")
-        _capture_manifests(guide_dir, manifests_dir, plan.deployment.namespace, env)
+        _capture_manifests(
+            guide_dir,
+            manifests_dir,
+            plan.deployment.namespace,
+            env,
+            model_values_relpath=guide_layout["model_values_relpath"],
+        )
 
     step(
         f"Applying helmfile environment {env['HELMFILE_ENVIRONMENT']} "
