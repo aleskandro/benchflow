@@ -271,12 +271,16 @@ value; for same-cluster runs, the queue name is `local`.
 This means `bflow experiment run ...` is set-and-forget again: your laptop does
 not need to stay alive while the execution waits in queue.
 
-Important limitation:
-- this Kueue admission path only gates GPU capacity and start order
-- it does not replace a cluster-level lock for shared platform mutations
-- concurrent runs can still race on setup and teardown of shared platform state
+Important behavior:
+- for `llm-d` and `RHOAI`, BenchFlow adds a setup key to each queued execution
+- once a target cluster has an admitted setup key, BenchFlow admits only matching-key workloads until that admitted wave finishes
+- same-key workloads can keep using spare GPUs in parallel; different-key workloads wait in queue
+- shared platform switching happens only in `prepare`, and the installed platform stays in place until another setup key is requested or you run explicit teardown
 - matrix parent cancellation is best-effort once child executions have already been submitted; queued or running children may need to be cancelled individually
-- until BenchFlow has an explicit cluster lock, treat Kueue as capacity admission, not full mutation safety
+
+Remaining limitations:
+- legacy target clusters without BenchFlow platform state are adopted heuristically; the first mutating run after upgrading BenchFlow may reset and reinstall shared platform prerequisites
+- BenchFlow does not reconcile manual or out-of-band platform changes made outside its own setup state
 
 ## Profiles
 

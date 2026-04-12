@@ -325,6 +325,7 @@ class DeploymentProfileSpec:
     namespace: str | None = None
     repo_url: str = "https://github.com/llm-d/llm-d.git"
     repo_ref: str = "main"
+    platform_version: str = ""
     gateway: str = "istio"
     endpoint_path: str = "/v1/models"
     scheduler_profile: str = ""
@@ -409,6 +410,7 @@ class ResolvedDeployment:
     model_storage: ModelStorageSpec
     repo_url: str
     repo_ref: str
+    platform_version: str
     gateway: str
     scheduler_profile: str
     scheduler_image: str

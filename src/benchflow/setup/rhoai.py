@@ -24,7 +24,7 @@ RHOAI_OPERATOR_SUBSCRIPTION_NAME = "rhods-operator"
 RHOAI_OPERATORGROUP_NAME = "redhat-ods-operator"
 RHOAI_OPERATOR_PACKAGE_NAME = "rhods-operator"
 RHOAI_CHANNEL = "fast-3.x"
-RHOAI_PINNED_SERIES = "3.3."
+DEFAULT_RHOAI_PLATFORM_VERSION = "RHOAI-3.3"
 RHOAI_DSC_NAME = "default-dsc"
 RHOAI_APPLICATIONS_NAMESPACE = "redhat-ods-applications"
 RHOAI_GATEWAYCLASS_NAME = "openshift-default"
@@ -34,11 +34,12 @@ _RHOAI_VERSION_RE = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
 _RHOAI_EA_RE = re.compile(r"(?i)(?:^|[-_.])ea[-_.]?(?P<index>\d+)(?:$|[-_.])")
 
 
-def _empty_state() -> dict[str, Any]:
+def _empty_state(platform_version: str) -> dict[str, Any]:
     return {
         "apiVersion": "benchflow.io/v1alpha1",
         "kind": "SetupState",
         "platform": "rhoai",
+        "platform_version": platform_version,
         "operator_namespace_created": False,
         "operator_subscription_managed": False,
         "operatorgroup_managed": False,
@@ -165,6 +166,23 @@ def _normalize_rhoai_mlflow_version(value: str) -> str | None:
     return f"{label}-EA{ea_match.group('index')}"
 
 
+def normalize_rhoai_platform_version(value: str) -> str:
+    normalized = _normalize_rhoai_mlflow_version(value)
+    return normalized or DEFAULT_RHOAI_PLATFORM_VERSION
+
+
+def _requested_rhoai_version(value: str) -> tuple[str, str | None]:
+    normalized = normalize_rhoai_platform_version(value)
+    version_match = _RHOAI_VERSION_RE.search(normalized)
+    if version_match is None:
+        raise CommandError(f"invalid requested RHOAI version: {value!r}")
+    ea_match = _RHOAI_EA_RE.search(normalized)
+    return (
+        f"{version_match.group('major')}.{version_match.group('minor')}.",
+        ea_match.group("index") if ea_match is not None else None,
+    )
+
+
 def discover_rhoai_mlflow_version(kubeconfig: str | Path | None = None) -> str:
     kubectl_cmd = require_any_command("oc", "kubectl")
     with use_kubeconfig(kubeconfig):
@@ -196,7 +214,7 @@ def discover_rhoai_mlflow_version(kubeconfig: str | Path | None = None) -> str:
     )
 
 
-def _resolve_rhoai_starting_csv(kubectl_cmd: str) -> str:
+def _resolve_rhoai_starting_csv(kubectl_cmd: str, requested_version: str) -> str:
     package = run_json_command(
         [
             kubectl_cmd,
@@ -210,6 +228,7 @@ def _resolve_rhoai_starting_csv(kubectl_cmd: str) -> str:
         ]
     )
     channels = package.get("status", {}).get("channels", []) or []
+    requested_series, requested_ea = _requested_rhoai_version(requested_version)
     channel = next(
         (item for item in channels if item.get("name") == RHOAI_CHANNEL),
         None,
@@ -225,16 +244,31 @@ def _resolve_rhoai_starting_csv(kubectl_cmd: str) -> str:
     current_version = str(
         (channel.get("currentCSVDesc", {}) or {}).get("version") or ""
     )
-    if current_csv and current_version.startswith(RHOAI_PINNED_SERIES):
-        version_tuple = _parse_version_tuple(current_version)
-        if version_tuple:
-            candidates.append((version_tuple, current_csv))
+    if current_csv and current_version.startswith(requested_series):
+        normalized_current = _normalize_rhoai_mlflow_version(current_version)
+        normalized_ea = (
+            _RHOAI_EA_RE.search(normalized_current or "").group("index")
+            if normalized_current and _RHOAI_EA_RE.search(normalized_current)
+            else None
+        )
+        if normalized_ea == requested_ea:
+            version_tuple = _parse_version_tuple(current_version)
+            if version_tuple:
+                candidates.append((version_tuple, current_csv))
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         version = str(entry.get("version") or "")
         name = str(entry.get("name") or "")
-        if not version.startswith(RHOAI_PINNED_SERIES):
+        if not version.startswith(requested_series):
+            continue
+        normalized_version = _normalize_rhoai_mlflow_version(version)
+        normalized_ea = (
+            _RHOAI_EA_RE.search(normalized_version or "").group("index")
+            if normalized_version and _RHOAI_EA_RE.search(normalized_version)
+            else None
+        )
+        if normalized_ea != requested_ea:
             continue
         version_tuple = _parse_version_tuple(version)
         if not version_tuple or not name:
@@ -243,11 +277,121 @@ def _resolve_rhoai_starting_csv(kubectl_cmd: str) -> str:
 
     if not candidates:
         raise CommandError(
-            f"channel {RHOAI_CHANNEL} for {RHOAI_OPERATOR_PACKAGE_NAME} does not expose a {RHOAI_PINNED_SERIES} CSV"
+            f"channel {RHOAI_CHANNEL} for {RHOAI_OPERATOR_PACKAGE_NAME} does not expose "
+            f"a CSV matching {normalize_rhoai_platform_version(requested_version)}"
         )
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
+
+
+def rhoai_platform_present(kubectl_cmd: str) -> bool:
+    return _operator_subscription_exists(kubectl_cmd) or _datasciencecluster_exists(
+        kubectl_cmd
+    )
+
+
+def reset_rhoai_platform() -> None:
+    kubectl_cmd = require_any_command("oc", "kubectl")
+
+    subscription = run_command(
+        [
+            kubectl_cmd,
+            "get",
+            "subscription",
+            RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+            "-n",
+            RHOAI_OPERATOR_NAMESPACE,
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    csv_candidates: list[str] = []
+    if subscription.returncode == 0:
+        payload = json.loads(subscription.stdout or "{}")
+        csv_candidates = [
+            str(candidate or "").strip()
+            for candidate in (
+                payload.get("status", {}).get("currentCSV"),
+                payload.get("status", {}).get("installedCSV"),
+            )
+            if str(candidate or "").strip()
+        ]
+
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "gateway",
+            RHOAI_GATEWAY_NAME,
+            "-n",
+            RHOAI_GATEWAY_NAMESPACE,
+            "--ignore-not-found=true",
+        ],
+        check=False,
+    )
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "datasciencecluster",
+            RHOAI_DSC_NAME,
+            "--ignore-not-found=true",
+        ],
+        check=False,
+    )
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "subscription",
+            RHOAI_OPERATOR_SUBSCRIPTION_NAME,
+            "-n",
+            RHOAI_OPERATOR_NAMESPACE,
+            "--ignore-not-found=true",
+        ],
+        check=False,
+    )
+    for csv_name in csv_candidates:
+        run_command(
+            [
+                kubectl_cmd,
+                "delete",
+                "csv",
+                csv_name,
+                "-n",
+                RHOAI_OPERATOR_NAMESPACE,
+                "--ignore-not-found=true",
+            ],
+            check=False,
+        )
+
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "operatorgroup",
+            RHOAI_OPERATORGROUP_NAME,
+            "-n",
+            RHOAI_OPERATOR_NAMESPACE,
+            "--ignore-not-found=true",
+        ],
+        check=False,
+    )
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "namespace",
+            RHOAI_OPERATOR_NAMESPACE,
+            "--ignore-not-found=true",
+            "--wait=false",
+        ],
+        check=False,
+    )
+    success("RHOAI platform prerequisites have been reset")
 
 
 def _apply_documents(
@@ -434,7 +578,10 @@ def setup_rhoai(
     plan: ResolvedRunPlan, *, state_path: Path | None = None
 ) -> dict[str, Any]:
     kubectl_cmd = require_any_command("oc", "kubectl")
-    state = _empty_state()
+    requested_version = normalize_rhoai_platform_version(
+        str(plan.deployment.platform_version or "")
+    )
+    state = _empty_state(requested_version)
     _persist_state(state, state_path)
 
     if _operator_subscription_exists(kubectl_cmd):
@@ -448,7 +595,7 @@ def setup_rhoai(
         source, source_namespace = _catalog_source_for_package(
             kubectl_cmd, RHOAI_OPERATOR_PACKAGE_NAME
         )
-        starting_csv = _resolve_rhoai_starting_csv(kubectl_cmd)
+        starting_csv = _resolve_rhoai_starting_csv(kubectl_cmd, requested_version)
         detail(
             f"Installing {RHOAI_OPERATOR_PACKAGE_NAME} from {RHOAI_CHANNEL} "
             f"with startingCSV {starting_csv}"
@@ -576,7 +723,7 @@ def setup_rhoai(
     return state
 
 
-def teardown_rhoai(plan: ResolvedRunPlan, state: dict[str, Any]) -> None:
+def teardown_rhoai(plan: ResolvedRunPlan | None, state: dict[str, Any]) -> None:
     if not state or state.get("platform") != "rhoai":
         detail("No RHOAI setup state found; skipping teardown")
         return

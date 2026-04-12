@@ -12,6 +12,7 @@ from typing import Any
 from ..cluster import CommandError, require_command, run_command, run_json_command
 from ..contracts import ExecutionSummary, ResolvedRunPlan, ValidationError
 from ..kueue import execution_labels_for_matrix, execution_labels_for_plan
+from ..platform_state import SETUP_KEY_ANNOTATION, setup_key_for_plan
 from .matrix_payloads import RUN_PLANS_ANNOTATION, RUN_PLANS_CONFIGMAP_PARAM
 from ..ui import detail, step, success, warning
 
@@ -32,6 +33,12 @@ def _common_labels(plan: ResolvedRunPlan, *, backend: str) -> dict[str, str]:
         "benchflow.io/platform": plan.deployment.platform,
         "benchflow.io/mode": plan.deployment.mode,
         "benchflow.io/execution-backend": backend,
+    }
+
+
+def _common_annotations(plan: ResolvedRunPlan) -> dict[str, str]:
+    return {
+        SETUP_KEY_ANNOTATION: setup_key_for_plan(plan),
     }
 
 
@@ -111,7 +118,7 @@ def render_pipelinerun(
     *,
     pipeline_name: str,
     setup_mode: str,
-    teardown: bool,
+    teardown: bool = False,
     skip_kueue_reservation: bool = False,
     benchflow_image: str | None = None,
 ) -> dict[str, Any]:
@@ -159,6 +166,7 @@ def render_pipelinerun(
                     plan, skip_reservation=skip_kueue_reservation
                 ),
             },
+            "annotations": _common_annotations(plan),
         },
         "spec": {
             "pipelineRef": {"name": pipeline_name},

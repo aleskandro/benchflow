@@ -56,8 +56,11 @@ def _gateway_provider_dir(checkout_root: Path) -> Path:
     return checkout_root / "guides" / "prereq" / "gateway-provider"
 
 
-def _clone_llmd_repo(
-    plan: ResolvedRunPlan, workspace_dir: Path | None
+def _clone_llmd_repo_source(
+    *,
+    repo_url: str,
+    repo_ref: str,
+    workspace_dir: Path | None,
 ) -> tuple[Path, bool]:
     created_tempdir = workspace_dir is None
     checkout_root = (
@@ -66,16 +69,24 @@ def _clone_llmd_repo(
         else Path(tempfile.mkdtemp(prefix="benchflow-llmd-setup-"))
     )
     checkout_dir = checkout_root / "llm-d-repo"
-    step(
-        f"Cloning llm-d platform setup sources from {plan.deployment.repo_url} at {plan.deployment.repo_ref}"
-    )
+    step(f"Cloning llm-d platform setup sources from {repo_url} at {repo_ref}")
     clone_repo(
-        url=plan.deployment.repo_url,
-        revision=plan.deployment.repo_ref,
+        url=repo_url,
+        revision=repo_ref,
         output_dir=checkout_dir,
         delete_existing=True,
     )
     return checkout_dir, created_tempdir
+
+
+def _clone_llmd_repo(
+    plan: ResolvedRunPlan, workspace_dir: Path | None
+) -> tuple[Path, bool]:
+    return _clone_llmd_repo_source(
+        repo_url=plan.deployment.repo_url,
+        repo_ref=plan.deployment.repo_ref,
+        workspace_dir=workspace_dir,
+    )
 
 
 def _resource_manifest(
@@ -206,6 +217,23 @@ def _gateway_dependencies_present(kubectl_cmd: str, repo_ref: str) -> bool:
     return True
 
 
+def llmd_platform_present(kubectl_cmd: str) -> bool:
+    if {"istio-base", "istiod"}.issubset(_helm_release_names("istio-system")):
+        return True
+    for crd_name in (
+        "inferencepools.inference.networking.x-k8s.io",
+        "inferencepools.inference.networking.k8s.io",
+    ):
+        result = run_command(
+            [kubectl_cmd, "get", "crd", crd_name, "-o", "name"],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
 def _istio_crd_metadata(kubectl_cmd: str) -> list[dict[str, Any]]:
     payload = run_json_command([kubectl_cmd, "get", "crd", "-o", "json"])
     snapshots: list[dict[str, Any]] = []
@@ -318,6 +346,43 @@ def _wait_for_istiod(kubectl_cmd: str, timeout_seconds: int) -> None:
     )
 
 
+def reset_llmd_platform(
+    *,
+    repo_url: str,
+    repo_ref: str,
+    gateway: str = "istio",
+    workspace_dir: Path | None = None,
+) -> None:
+    if gateway != "istio":
+        raise CommandError(
+            f"llm-d cleanup currently supports only gateway=istio, got {gateway}"
+        )
+
+    require_command("bash")
+    require_command("git")
+    require_command("helm")
+    require_command("helmfile")
+    kubectl_cmd = require_any_command("oc", "kubectl")
+
+    checkout_dir, created_tempdir = _clone_llmd_repo_source(
+        repo_url=repo_url,
+        repo_ref=repo_ref,
+        workspace_dir=workspace_dir,
+    )
+    try:
+        gateway_provider_dir = _gateway_provider_dir(checkout_dir)
+        if {"istio-base", "istiod"}.issubset(_helm_release_names("istio-system")):
+            step("Removing upstream Istio before switching platforms")
+            _run_istio_helmfile(gateway_provider_dir, "destroy")
+        if llmd_platform_present(kubectl_cmd):
+            step("Removing Gateway API and GAIE CRDs before switching platforms")
+            _run_gateway_provider_script(gateway_provider_dir, "delete")
+        success("llm-d platform prerequisites have been reset")
+    finally:
+        if created_tempdir:
+            shutil.rmtree(checkout_dir.parent, ignore_errors=True)
+
+
 def setup_llmd(
     plan: ResolvedRunPlan,
     *,
@@ -415,7 +480,7 @@ def setup_llmd(
 
 
 def teardown_llmd(
-    plan: ResolvedRunPlan,
+    plan: ResolvedRunPlan | None,
     state: dict[str, Any],
     *,
     workspace_dir: Path | None = None,
@@ -423,10 +488,13 @@ def teardown_llmd(
     if not state or state.get("platform") != "llm-d":
         detail("No llm-d setup state found; skipping teardown")
         return
-    if plan.deployment.gateway != "istio":
-        detail(
-            f"Skipping llm-d teardown because gateway={plan.deployment.gateway} is not managed here"
-        )
+    gateway = str(
+        state.get("gateway")
+        or (plan.deployment.gateway if plan is not None else "")
+        or "istio"
+    ).strip()
+    if gateway != "istio":
+        detail(f"Skipping llm-d teardown because gateway={gateway} is not managed here")
         return
 
     require_command("bash")
@@ -435,7 +503,22 @@ def teardown_llmd(
     require_command("helmfile")
     kubectl_cmd = require_any_command("oc", "kubectl")
 
-    checkout_dir, created_tempdir = _clone_llmd_repo(plan, workspace_dir)
+    repo_url = str(
+        state.get("repo_url")
+        or (plan.deployment.repo_url if plan is not None else "")
+        or "https://github.com/llm-d/llm-d.git"
+    ).strip()
+    repo_ref = str(
+        state.get("repo_ref")
+        or (plan.deployment.repo_ref if plan is not None else "")
+        or "main"
+    ).strip()
+
+    checkout_dir, created_tempdir = _clone_llmd_repo_source(
+        repo_url=repo_url,
+        repo_ref=repo_ref,
+        workspace_dir=workspace_dir,
+    )
     try:
         gateway_provider_dir = _gateway_provider_dir(checkout_dir)
 

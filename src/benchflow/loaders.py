@@ -407,6 +407,7 @@ def load_deployment_profile(path: Path) -> DeploymentProfile:
         namespace=spec.get("namespace"),
         repo_url=str(spec.get("repo_url", "https://github.com/llm-d/llm-d.git")),
         repo_ref=str(spec.get("repo_ref", "main")),
+        platform_version=str(spec.get("platform_version", "")),
         gateway=str(spec.get("gateway", "istio")),
         endpoint_path=str(spec.get("endpoint_path", "/v1/models")),
         scheduler_profile=str(spec.get("scheduler_profile", "")),
@@ -519,6 +520,7 @@ def load_run_plan_data(raw: dict[str, Any]) -> ResolvedRunPlan:
             deployment_raw.get("repo_url", "https://github.com/llm-d/llm-d.git")
         ),
         repo_ref=str(deployment_raw.get("repo_ref", "main")),
+        platform_version=str(deployment_raw.get("platform_version", "")),
         gateway=str(deployment_raw.get("gateway", "istio")),
         scheduler_profile=str(deployment_raw.get("scheduler_profile", "")),
         scheduler_image=str(deployment_raw.get("scheduler_image", "")),

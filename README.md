@@ -11,7 +11,7 @@
 BenchFlow is a packaged control plane for running benchmark scenarios, not a loose collection of scripts. It resolves an experiment into one immutable `RunPlan`, executes it through Tekton `PipelineRun`s, captures metrics and artifacts, and pushes the result to MLflow. It is powered by [vllm-project/guidellm](https://github.com/vllm-project/guidellm).
 
 > [!WARNING]
-> BenchFlow does not yet implement a cluster-level lock for shared platform setup. Until that exists, let each benchmark job run end to end before launching another one that mutates the cluster, or use one matrix experiment so BenchFlow can queue and run multiple combinations through Kueue with controlled parallelism.
+> BenchFlow now locks shared `llm-d` and `RHOAI` platform mutations per target cluster by setup key. Same-key runs can share a wave and use spare GPUs in parallel; different-key runs wait until the current admitted wave finishes. Shared platform prerequisites stay installed until a different setup key is requested or you explicitly tear them down.
 
 ## Quickstart
 
@@ -74,8 +74,8 @@ For the full command surface, RunPlan PipelineRun flow, matrix execution, and lo
 
 ## Known Limitations
 
-- BenchFlow does not yet implement a cluster-level lock for shared platform setup and teardown, so concurrent mutating runs can still race on shared cluster state.
+- Legacy target clusters without BenchFlow platform state are adopted heuristically; the first mutating run after upgrading BenchFlow may reset and reinstall shared `llm-d` or `RHOAI` prerequisites.
+- BenchFlow coordinates only the shared platform state it manages itself. Manual or out-of-band cluster mutations are not version-reconciled.
 - `llm-d` matrix children depend on release-scoped chart values; use the current BenchFlow image when testing parallel llm-d runs.
 - Matrix parent cancellation is best-effort after child executions have already been submitted; queued or running children may need to be cancelled individually.
-- Kueue only gates GPU capacity and start order. It does not replace mutation safety for shared platform resources.
 - BenchFlow manages GuideLLM benchmark output paths itself. `GUIDELLM_OUTPUT_DIR` is set automatically during benchmark execution, and `GUIDELLM_OUTPUT_PATH` is not supported in benchmark environment overrides.

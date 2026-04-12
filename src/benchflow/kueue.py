@@ -21,6 +21,7 @@ from .cluster import (
 )
 from .contracts import ExecutionSummary, ResolvedRunPlan, ValidationError
 from .models import sanitize_name
+from .platform_state import SETUP_KEY_ANNOTATION
 from .orchestration.matrix_payloads import (
     adopt_matrix_run_plans_configmap,
     matrix_run_plans_configmap_name_from_labels,
@@ -307,6 +308,7 @@ def _workload_json(
     requested_gpu_count: int,
     max_execution_seconds: int,
     execution_labels: dict[str, str] | None = None,
+    execution_annotations: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     requests = (
         {REMOTE_GPU_RESOURCE: str(requested_gpu_count)} if requested_gpu_count else {}
@@ -332,6 +334,11 @@ def _workload_json(
             "name": name,
             "namespace": namespace,
             "labels": labels,
+            "annotations": {
+                str(key): str(value)
+                for key, value in (execution_annotations or {}).items()
+                if str(key).strip() and str(value).strip()
+            },
         },
         "spec": {
             "active": True,
@@ -371,6 +378,7 @@ def create_reservation_workload(
     requested_gpu_count: int,
     execution_timeout: str,
     execution_labels: dict[str, str] | None = None,
+    execution_annotations: dict[str, str] | None = None,
 ) -> str:
     kubectl_cmd = require_any_command("oc", "kubectl")
     ensure_queue_registration(namespace, cluster_name)
@@ -383,6 +391,7 @@ def create_reservation_workload(
         requested_gpu_count=requested_gpu_count,
         max_execution_seconds=_duration_seconds(execution_timeout),
         execution_labels=execution_labels,
+        execution_annotations=execution_annotations,
     )
     result = run_command(
         [kubectl_cmd, "create", "-n", namespace, "-f", "-", "-o", "json"],
@@ -763,6 +772,11 @@ def _workload_submission_configmap_name(workload: dict[str, Any]) -> str:
     return submission_configmap_name_from_labels(labels)
 
 
+def _workload_setup_key(workload: dict[str, Any]) -> str:
+    annotations = workload.get("metadata", {}).get("annotations", {}) or {}
+    return str(annotations.get(SETUP_KEY_ANNOTATION) or "").strip()
+
+
 def _pipeline_run_payload(namespace: str, name: str) -> dict[str, Any] | None:
     kubectl_cmd = require_any_command("oc", "kubectl")
     result = run_command(
@@ -962,6 +976,37 @@ def _requeue_ready_workload(namespace: str, workload: dict[str, Any]) -> None:
     detail(f"Requeued ready reservation workload {workload_name}")
 
 
+def _workload_creation_key(workload: dict[str, Any]) -> tuple[str, str]:
+    metadata = workload.get("metadata", {}) or {}
+    return (
+        str(metadata.get("creationTimestamp") or ""),
+        str(metadata.get("name") or ""),
+    )
+
+
+def _cluster_active_setup_key(workloads: list[dict[str, Any]]) -> tuple[str, str]:
+    admitted_workloads = [
+        workload
+        for workload in workloads
+        if (workload.get("status", {}) or {}).get("admission")
+    ]
+    if not admitted_workloads:
+        return "", ""
+    active_keys = {_workload_setup_key(workload) for workload in admitted_workloads}
+    non_empty_keys = {key for key in active_keys if key}
+    if not non_empty_keys:
+        return "<unspecified>", ""
+    if "" in active_keys:
+        return (
+            "",
+            "cluster has admitted workloads with mixed known and unknown setup keys",
+        )
+    if len(non_empty_keys) == 1:
+        return next(iter(non_empty_keys)), ""
+    keys = ", ".join(sorted(non_empty_keys))
+    return "", f"cluster has mixed admitted setup keys: {keys}"
+
+
 def _kubeconfig_path_for_secret(namespace: str, secret_name: str) -> Path:
     kubectl_cmd = require_any_command("oc", "kubectl")
     secret = run_json_command(
@@ -988,11 +1033,16 @@ def run_remote_capacity_controller(
     while True:
         try:
             _patch_admission_check_active(REMOTE_CAPACITY_ADMISSION_CHECK)
-            for workload in list_reservation_workloads(namespace):
+            active_workloads: list[dict[str, Any]] = []
+            for workload in sorted(
+                list_reservation_workloads(namespace),
+                key=_workload_creation_key,
+            ):
                 metadata = workload.get("metadata", {}) or {}
                 workload_name = str(metadata.get("name") or "")
                 labels = metadata.get("labels", {}) or {}
                 execution_name = _workload_execution_name(workload)
+                payload = None
                 if execution_name:
                     payload = _pipeline_run_payload(namespace, execution_name)
                     if _pipeline_run_finished(payload):
@@ -1015,11 +1065,46 @@ def run_remote_capacity_controller(
                                 "remote capacity controller could not create "
                                 f"PipelineRun for reservation {workload_name}: {exc}"
                             )
+                active_workloads.append(workload)
+
+            workloads_by_cluster: dict[str, list[dict[str, Any]]] = {}
+            for workload in active_workloads:
+                labels = (workload.get("metadata", {}) or {}).get("labels", {}) or {}
+                cluster_name = queue_name_from_labels(labels)
+                workloads_by_cluster.setdefault(cluster_name, []).append(workload)
+
+            for cluster_name, cluster_workloads in sorted(workloads_by_cluster.items()):
+                pending = [
+                    workload
+                    for workload in sorted(
+                        cluster_workloads, key=_workload_creation_key
+                    )
+                    if not (workload.get("status", {}) or {}).get("admission")
+                ]
+                if not pending:
                     continue
 
-                cluster_name = queue_name_from_labels(labels)
-                requested = _workload_requests_gpus(workload)
-                kubeconfig_secret = target_secret_from_labels(labels) or (
+                active_key, active_key_error = _cluster_active_setup_key(
+                    cluster_workloads
+                )
+                if active_key_error:
+                    for workload in pending:
+                        _patch_workload_check(
+                            namespace,
+                            workload,
+                            state="Retry",
+                            message=active_key_error,
+                            requeue_after_seconds=30,
+                        )
+                    continue
+
+                queue_head = pending[0]
+                queue_head_key = _workload_setup_key(queue_head)
+                queue_head_requested = _workload_requests_gpus(queue_head)
+                queue_head_labels = (queue_head.get("metadata", {}) or {}).get(
+                    "labels", {}
+                ) or {}
+                kubeconfig_secret = target_secret_from_labels(queue_head_labels) or (
                     "" if cluster_name == LOCAL_CLUSTER_QUEUE else cluster_name
                 )
                 kubeconfig_path: Path | None = None
@@ -1031,41 +1116,88 @@ def run_remote_capacity_controller(
                     capacity = discover_cluster_gpu_capacity(kubeconfig_path)
                     usage = discover_live_gpu_usage(kubeconfig_path)
                 except CommandError as exc:
-                    _patch_workload_check(
-                        namespace,
-                        workload,
-                        state="Retry",
-                        message=str(exc),
-                        requeue_after_seconds=30,
-                    )
+                    for workload in pending:
+                        _patch_workload_check(
+                            namespace,
+                            workload,
+                            state="Retry",
+                            message=str(exc),
+                            requeue_after_seconds=30,
+                        )
                     continue
                 finally:
                     if kubeconfig_path is not None and kubeconfig_path.exists():
                         kubeconfig_path.unlink(missing_ok=True)
 
                 available = max(0, capacity - usage)
-                if available >= requested:
+                wave_key = active_key or queue_head_key
+                wave_key_label = wave_key or "<unspecified>"
+                queue_head_fits = bool(active_key) or available >= queue_head_requested
+
+                for workload in pending:
+                    requested = _workload_requests_gpus(workload)
+                    workload_key = _workload_setup_key(workload)
+
+                    if not queue_head_fits:
+                        if workload is queue_head:
+                            message = (
+                                f"target cluster {cluster_name} currently has {available}/{capacity} GPU(s) "
+                                f"free; head-of-line workload requires {queue_head_requested}"
+                            )
+                        else:
+                            message = (
+                                f"target cluster {cluster_name} is waiting for head-of-line "
+                                f"setup key {wave_key_label}"
+                            )
+                        _patch_workload_check(
+                            namespace,
+                            workload,
+                            state="Retry",
+                            message=message,
+                            requeue_after_seconds=30,
+                        )
+                        continue
+
+                    if workload_key != wave_key:
+                        reason = (
+                            "is locked to"
+                            if active_key
+                            else "is waiting for head-of-line setup key"
+                        )
+                        _patch_workload_check(
+                            namespace,
+                            workload,
+                            state="Retry",
+                            message=(
+                                f"target cluster {cluster_name} {reason} {wave_key_label}"
+                            ),
+                            requeue_after_seconds=30,
+                        )
+                        continue
+
+                    if available >= requested:
+                        _patch_workload_check(
+                            namespace,
+                            workload,
+                            state="Ready",
+                            message=(
+                                f"target cluster {cluster_name} has {available} GPU(s) available "
+                                f"for a {requested}-GPU workload using setup key {wave_key_label}"
+                            ),
+                        )
+                        _requeue_ready_workload(namespace, workload)
+                        continue
+
                     _patch_workload_check(
                         namespace,
                         workload,
-                        state="Ready",
+                        state="Retry",
                         message=(
-                            f"target cluster {cluster_name} has {available} GPU(s) available "
-                            f"for a {requested}-GPU workload"
+                            f"target cluster {cluster_name} currently has {available}/{capacity} GPU(s) "
+                            f"free; workload requires {requested}"
                         ),
+                        requeue_after_seconds=30,
                     )
-                    _requeue_ready_workload(namespace, workload)
-                    continue
-                _patch_workload_check(
-                    namespace,
-                    workload,
-                    state="Retry",
-                    message=(
-                        f"target cluster {cluster_name} currently has {available}/{capacity} GPU(s) "
-                        f"free; workload requires {requested}"
-                    ),
-                    requeue_after_seconds=30,
-                )
         except CommandError as exc:
             warning(f"remote capacity controller reconciliation failed: {exc}")
         time.sleep(max(1, int(poll_interval_seconds)))

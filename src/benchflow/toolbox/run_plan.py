@@ -50,7 +50,7 @@ def cleanup_run_plan(
     plan: ResolvedRunPlan,
     *,
     context: ExecutionContext | None = None,
-    teardown: bool = True,
+    teardown: bool = False,
     wait_for_deletion: bool = True,
     timeout_seconds: int = 600,
     skip_if_not_exists: bool = True,

@@ -9,7 +9,10 @@ from pathlib import Path
 from ..accelerator import discover_plan_accelerator
 from ..cluster import CommandError
 from ..models import ResolvedRunPlan
-from ..setup.rhoai import RHOAI_PINNED_SERIES, discover_rhoai_mlflow_version
+from ..setup.rhoai import (
+    discover_rhoai_mlflow_version,
+    normalize_rhoai_platform_version,
+)
 from ..ui import detail, step, success, warning
 from . import runtime as runtime_module
 
@@ -66,7 +69,7 @@ def benchmark_version_from_plan(plan: ResolvedRunPlan) -> str:
             return discover_rhoai_mlflow_version(kubeconfig=kubeconfig)
         except CommandError:
             pass
-        return f"RHOAI-{RHOAI_PINNED_SERIES.rstrip('.')}"
+        return normalize_rhoai_platform_version(plan.deployment.platform_version)
     return f"{plan.deployment.platform}-{plan.deployment.mode}"
 
 

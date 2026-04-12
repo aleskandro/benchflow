@@ -99,7 +99,7 @@ def _execution_context(
     )
 
 
-def _teardown_requested(value: str | None, default: bool = True) -> bool:
+def _teardown_requested(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     lowered = str(value).strip().lower()
@@ -926,7 +926,7 @@ def cmd_task_cleanup_run_plan(args: argparse.Namespace) -> int:
     cleanup_run_plan(
         plan,
         context=_execution_context(state_path=args.setup_state_path),
-        teardown=_teardown_requested(args.teardown_text, default=True),
+        teardown=_teardown_requested(args.teardown_text, default=False),
         wait_for_deletion=not args.no_wait,
         timeout_seconds=args.timeout_seconds,
         skip_if_not_exists=not args.no_skip_if_not_exists,
@@ -2058,9 +2058,9 @@ def task_deploy_run_plan_command(**kwargs: object) -> int:
 )
 @click.option(
     "--teardown-text",
-    default="true",
+    default="false",
     show_default=True,
-    help="Whether platform setup should be torn down after scenario cleanup.",
+    help="Whether shared platform setup should also be torn down after scenario cleanup.",
 )
 def task_cleanup_run_plan_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_cleanup_run_plan, **kwargs)

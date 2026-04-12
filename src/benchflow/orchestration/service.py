@@ -25,14 +25,14 @@ from ..kueue import (
 )
 from ..loaders import load_run_plan_data, load_run_plan_file
 from ..models import sanitize_name
+from ..platform_state import setup_key_for_plan
 from .matrix_payloads import (
     adopt_matrix_run_plans_configmap,
     delete_matrix_run_plans_configmap,
     materialize_matrix_run_plans_configmap,
     matrix_run_plans_configmap_name_from_labels,
 )
-from ..setup import load_setup_state
-from ..toolbox import setup_platform, teardown_platform
+from ..toolbox import setup_platform
 from ..ui import detail, step, success, warning
 from .tekton import TektonOrchestrator
 
@@ -96,7 +96,7 @@ def render_execution_manifest(
     *,
     execution_name: str = DEFAULT_EXECUTION_NAME,
     setup_mode: str = "auto",
-    teardown: bool = True,
+    teardown: bool = False,
     skip_kueue_reservation: bool = False,
     benchflow_image: str | None = None,
 ) -> dict[str, Any]:
@@ -278,6 +278,12 @@ def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
         str(key): str(value)
         for key, value in (manifest.get("metadata", {}) or {}).get("labels", {}).items()
     }
+    annotations = {
+        str(key): str(value)
+        for key, value in (manifest.get("metadata", {}) or {})
+        .get("annotations", {})
+        .items()
+    }
     metadata = manifest.setdefault("metadata", {})
     metadata["namespace"] = namespace
     matrix_run_plans_configmap = ""
@@ -334,6 +340,7 @@ def submit_execution_manifest(manifest: dict[str, Any], namespace: str) -> str:
             requested_gpu_count=requested_gpus,
             execution_timeout=execution_timeout,
             execution_labels=labels,
+            execution_annotations=annotations,
         )
         return execution_name
     except BaseException:
@@ -379,8 +386,10 @@ def run_matrix_supervisor(
         if len({plan.deployment.platform for plan in plans}) == 1
         else ""
     )
+    matrix_setup_keys = {setup_key_for_plan(plan) for plan in plans}
     if (
         matrix_platform in {"llm-d", "rhoai"}
+        and len(matrix_setup_keys) == 1
         and all(plan.stages.deploy for plan in plans)
         and all(plan.stages.cleanup for plan in plans)
     ):
@@ -445,7 +454,7 @@ def run_matrix_supervisor(
                 plan,
                 execution_name=child_execution_name,
                 setup_mode="skip" if setup_hoisted else "auto",
-                teardown=False if setup_hoisted else True,
+                teardown=False,
                 skip_kueue_reservation=False,
                 benchflow_image=benchflow_image,
             )
@@ -458,15 +467,6 @@ def run_matrix_supervisor(
         if submit_children_in_parallel:
             wait_for_children(list(submitted))
     finally:
-        if setup_hoisted:
-            step(f"Tearing down hoisted {plans[0].deployment.platform} platform setup")
-            if setup_state_path is not None:
-                setup_state = load_setup_state(setup_state_path)
-            teardown_platform(
-                plans[0],
-                setup_state,
-                context=ExecutionContext(state_path=setup_state_path),
-            )
         if setup_state_dir is not None:
             setup_state_dir.cleanup()
 

@@ -8,8 +8,8 @@ metadata:
     tekton.dev/displayName: "Cleanup RunPlan"
 spec:
   description: >-
-    Remove the deployment resources described by the resolved RunPlan and tear
-    down any reversible platform setup recorded for the run.
+    Remove the deployment resources described by the resolved RunPlan and
+    optionally tear down the shared platform setup when explicitly requested.
   params:
     - name: IMAGE
       type: string
@@ -18,7 +18,7 @@ spec:
       type: string
     - name: TEARDOWN
       type: string
-      default: "true"
+      default: "false"
   workspaces:
     - name: state-storage
       description: Workspace that may contain setup-state.json
@@ -29,6 +29,7 @@ spec:
   steps:
     - name: cleanup
       image: $(params.IMAGE)
+      imagePullPolicy: Always
       env:
         - name: BENCHFLOW_TARGET_KUBECONFIG_WORKSPACE
           value: $(workspaces.target-kubeconfig.path)

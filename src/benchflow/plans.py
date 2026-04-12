@@ -287,12 +287,15 @@ def resolve_run_plan(
     )
 
     repo_ref = deployment_profile.spec.repo_ref
+    platform_version = str(deployment_profile.spec.platform_version or "").strip()
     if deployment_profile.spec.platform == "llm-d":
         repo_ref_override = _scalar_override(
             overrides.llm_d.repo_ref, "spec.overrides.llm_d.repo_ref"
         )
         if repo_ref_override:
             repo_ref = str(repo_ref_override)
+        if not platform_version:
+            platform_version = repo_ref
 
     scheduler_image = str(
         scheduler_image_override or deployment_profile.spec.scheduler_image
@@ -353,6 +356,7 @@ def resolve_run_plan(
         model_storage=deployment_profile.spec.model_storage,
         repo_url=deployment_profile.spec.repo_url,
         repo_ref=repo_ref,
+        platform_version=platform_version,
         gateway=deployment_profile.spec.gateway,
         scheduler_profile=deployment_profile.spec.scheduler_profile,
         scheduler_image=scheduler_image,

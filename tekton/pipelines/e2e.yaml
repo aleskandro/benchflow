@@ -21,7 +21,7 @@ spec:
       default: auto
     - name: TEARDOWN
       type: string
-      default: "true"
+      default: "false"
   workspaces:
     - name: results
     - name: models-storage
