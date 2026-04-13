@@ -776,6 +776,7 @@ def cmd_benchmark_report(args: argparse.Namespace) -> int:
         else None,
         version_overrides=parse_version_overrides(args.version_override),
         additional_csv_files=args.additional_csv or None,
+        notes=[item.strip() for item in args.note if item.strip()],
         repeat_section_legends=bool(args.repeat_section_legends),
     )
     print(report_path)
@@ -1709,6 +1710,13 @@ def _register_comparison_report_options(command):
         multiple=True,
         type=click.Path(dir_okay=False, path_type=Path),
         help="Additional CSV inputs to include in the report.",
+    )(command)
+    command = click.option(
+        "--note",
+        multiple=True,
+        help=(
+            "Add a note line to the report subtitle. Repeat to include multiple lines."
+        ),
     )(command)
     command = click.option(
         "--repeat-section-legends",

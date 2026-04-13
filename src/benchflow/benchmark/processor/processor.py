@@ -375,6 +375,7 @@ class BenchmarkProcessor:
         turns: Optional[int] = None,
         prefix_tokens: Optional[int] = None,
         prefix_count: Optional[int] = None,
+        notes: Optional[List[str]] = None,
         repeat_section_legends: bool = False,
         include_plotlyjs: bool = True,
     ):
@@ -401,6 +402,7 @@ class BenchmarkProcessor:
             turns: Number of turns for multi-turn benchmarks (optional)
             prefix_tokens: Prefix tokens for prefix caching benchmarks (optional)
             prefix_count: Prefix count for prefix caching benchmarks (optional)
+            notes: Optional subtitle note lines (optional)
             repeat_section_legends: Render repeated side legends per section (optional)
             include_plotlyjs: Inline Plotly JS in the generated HTML (optional)
         """
@@ -417,6 +419,7 @@ class BenchmarkProcessor:
         self.output_html = output_html or "benchmark_report.html"
         self.repeat_section_legends = repeat_section_legends
         self.include_plotlyjs = include_plotlyjs
+        self.notes = [str(note).strip() for note in (notes or []) if str(note).strip()]
 
         # Data profile parameters
         normalized_profile = {
@@ -1715,6 +1718,11 @@ class BenchmarkProcessor:
         title_lines.append(
             f"<span style='font-size:12px;'>{html.escape(data_profile_str)}</span>"
         )
+        for index, note in enumerate(self.notes):
+            label = "<b>Notes:</b> " if index == 0 else ""
+            title_lines.append(
+                f"<span style='font-size:12px;'>{label}{html.escape(note)}</span>"
+            )
         top_margin = 90 + (len(title_lines) * 24)
 
         fig.update_layout(

@@ -571,6 +571,7 @@ def generate_visualization_report(
     output_dir: str = None,
     output_file: str = None,
     replicas: int = 1,
+    notes: list[str] | None = None,
     repeat_section_legends: bool = False,
 ) -> str:
     """
@@ -587,6 +588,7 @@ def generate_visualization_report(
         output_dir: Output directory for HTML report
         output_file: Explicit HTML report path
         replicas: Number of replicas
+        notes: Optional subtitle note lines
         repeat_section_legends: Repeat side legends per section for screenshots
 
     Returns:
@@ -627,6 +629,7 @@ def generate_visualization_report(
             runtime_args=runtime_args,
             output_html=html_path,
             replicas=replicas,
+            notes=notes or [],
             repeat_section_legends=repeat_section_legends,
         )
 
@@ -1351,6 +1354,7 @@ def generate_plot_only_report(
     versions_override: dict = None,
     output_dir: str = None,
     output_file: str = None,
+    notes: list[str] | None = None,
     repeat_section_legends: bool = False,
 ) -> str:
     """
@@ -1364,6 +1368,7 @@ def generate_plot_only_report(
         versions_override: Dictionary mapping old version names to new names (optional)
         output_dir: Output directory for auto-generated report filename (optional)
         output_file: Explicit report path (optional)
+        notes: Optional subtitle note lines
         repeat_section_legends: Repeat side legends per section for screenshots
 
     Returns:
@@ -1619,6 +1624,7 @@ def generate_plot_only_report(
         compare_versions=compare_versions,
         output_html=html_path,
         data_profile=data_profile_params,
+        notes=notes or [],
         repeat_section_legends=repeat_section_legends,
     )
 
