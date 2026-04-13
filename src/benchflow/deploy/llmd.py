@@ -203,7 +203,8 @@ def _patch_values(plan: ResolvedRunPlan, values_file: Path) -> dict[str, Any]:
         env.append({"name": key, "value": value})
     container["env"] = env
 
-    container["image"] = runtime.image
+    if runtime.image:
+        container["image"] = runtime.image
     if plan.deployment.mode == "precise-prefix-cache":
         existing_args = list(container.get("args") or [])
         kv_events_config: dict[str, Any] | None = None
