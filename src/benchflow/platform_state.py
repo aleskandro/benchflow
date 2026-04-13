@@ -21,8 +21,7 @@ DEFAULT_LOCK_STALE_SECONDS = 1800
 def _now_rfc3339() -> str:
     return (
         datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
+        .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )
 
@@ -203,6 +202,12 @@ def _lease_expired(payload: dict[str, Any], default_stale_seconds: int) -> bool:
     return elapsed >= max(1, lease_duration)
 
 
+def _command_failure_details(result: Any) -> str:
+    stderr = str(getattr(result, "stderr", "") or "").strip()
+    stdout = str(getattr(result, "stdout", "") or "").strip()
+    return stderr or stdout or "command failed"
+
+
 @contextmanager
 def platform_prepare_lock(
     kubectl_cmd: str,
@@ -249,6 +254,12 @@ def platform_prepare_lock(
             )
             if created.returncode == 0:
                 break
+            details = _command_failure_details(created)
+            if "AlreadyExists" not in details:
+                raise CommandError(
+                    "failed to create BenchFlow platform prepare lease "
+                    f"in namespace {namespace}: {details}"
+                )
         else:
             payload = json.loads(result.stdout or "{}")
             spec = payload.get("spec", {}) or {}
@@ -276,6 +287,19 @@ def platform_prepare_lock(
                 )
                 if replaced.returncode == 0:
                     break
+                details = _command_failure_details(replaced)
+                if not any(
+                    marker in details
+                    for marker in (
+                        "NotFound",
+                        "Conflict",
+                        "the object has been modified",
+                    )
+                ):
+                    raise CommandError(
+                        "failed to replace BenchFlow platform prepare lease "
+                        f"in namespace {namespace}: {details}"
+                    )
 
         if time.time() >= deadline:
             raise CommandError(
