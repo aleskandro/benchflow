@@ -181,14 +181,15 @@ def _download_run_artifact(artifact_uri: str, artifact_path: str, dst_path: str)
 def _resolve_accelerator(
     params: dict[str, Any], tags: dict[str, Any] | None = None
 ) -> str:
+    placeholder_values = {"unknown", "n/a", "na", "none"}
     accelerator = str(params.get("accelerator") or "").strip()
-    if accelerator:
+    if accelerator and accelerator.lower() not in placeholder_values:
         return accelerator
     if tags is not None:
         accelerator = str(tags.get("accelerator") or "").strip()
-        if accelerator:
+        if accelerator and accelerator.lower() not in placeholder_values:
             return accelerator
-    return "unknown"
+    return accelerator or "unknown"
 
 
 def _resolve_report_output_path(
