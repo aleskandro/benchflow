@@ -1,21 +1,23 @@
 apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-default
-spec:
-  controllerName: openshift.io/gateway-controller/v1
----
-apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
+  labels:
+    istio.io/rev: openshift-gateway
   name: openshift-ai-inference
   namespace: openshift-ingress
 spec:
-  gatewayClassName: openshift-default
+  gatewayClassName: openshift-ai-inference
   listeners:
-    - name: http
-      port: 80
-      protocol: HTTP
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "{{ HOSTNAME }}"
+      tls:
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: "{{ TLS_SECRET_NAME }}"
+        mode: Terminate
       allowedRoutes:
         namespaces:
           from: All

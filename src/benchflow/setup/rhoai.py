@@ -27,9 +27,11 @@ RHOAI_CHANNEL = "fast-3.x"
 DEFAULT_RHOAI_PLATFORM_VERSION = "RHOAI-3.3"
 RHOAI_DSC_NAME = "default-dsc"
 RHOAI_APPLICATIONS_NAMESPACE = "redhat-ods-applications"
-RHOAI_GATEWAYCLASS_NAME = "openshift-default"
+RHOAI_GATEWAYCLASS_NAME = "openshift-ai-inference"
 RHOAI_GATEWAY_NAME = "openshift-ai-inference"
 RHOAI_GATEWAY_NAMESPACE = "openshift-ingress"
+RHOAI_GATEWAY_DEFAULT_TLS_SECRET = "default-gateway-tls"
+RHOAI_GATEWAY_FALLBACK_TLS_SECRET = "data-science-gateway-service-tls"
 _RHOAI_VERSION_RE = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
 _RHOAI_EA_RE = re.compile(r"(?i)(?:^|[-_.])ea[-_.]?(?P<index>\d+)(?:$|[-_.])")
 
@@ -108,6 +110,57 @@ def _gateway_exists(kubectl_cmd: str) -> bool:
             "-o",
             "name",
         ]
+    )
+
+
+def _infer_rhoai_gateway_hostname(kubectl_cmd: str) -> str | None:
+    route = run_command(
+        [
+            kubectl_cmd,
+            "get",
+            "route",
+            "data-science-gateway",
+            "-n",
+            RHOAI_GATEWAY_NAMESPACE,
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if route.returncode != 0:
+        return None
+    payload = json.loads(route.stdout or "{}")
+    host = str(payload.get("spec", {}).get("host") or "").strip()
+    if not host:
+        return None
+    _, separator, remainder = host.partition(".")
+    if not separator or not remainder:
+        return None
+    return f"inference-gateway.{remainder}"
+
+
+def _rhoai_gateway_tls_secret_name(kubectl_cmd: str) -> str:
+    for secret_name in (
+        RHOAI_GATEWAY_DEFAULT_TLS_SECRET,
+        RHOAI_GATEWAY_FALLBACK_TLS_SECRET,
+    ):
+        if _resource_exists(
+            [
+                kubectl_cmd,
+                "get",
+                "secret",
+                secret_name,
+                "-n",
+                RHOAI_GATEWAY_NAMESPACE,
+                "-o",
+                "name",
+            ]
+        ):
+            return secret_name
+    raise CommandError(
+        f"could not find a Gateway TLS secret in {RHOAI_GATEWAY_NAMESPACE}; "
+        f"expected {RHOAI_GATEWAY_DEFAULT_TLS_SECRET} or {RHOAI_GATEWAY_FALLBACK_TLS_SECRET}"
     )
 
 
@@ -320,6 +373,16 @@ def reset_rhoai_platform() -> None:
             if str(candidate or "").strip()
         ]
 
+    run_command(
+        [
+            kubectl_cmd,
+            "delete",
+            "gatewayclass",
+            RHOAI_GATEWAYCLASS_NAME,
+            "--ignore-not-found=true",
+        ],
+        check=False,
+    )
     run_command(
         [
             kubectl_cmd,
@@ -574,6 +637,35 @@ def _wait_for_labeled_pods_ready(
     raise CommandError(f"timed out waiting for {label}")
 
 
+def _wait_for_gateway_ready(
+    kubectl_cmd: str,
+    *,
+    namespace: str,
+    name: str,
+    timeout_seconds: int,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        payload = run_json_command(
+            [kubectl_cmd, "get", "gateway", name, "-n", namespace, "-o", "json"]
+        )
+        conditions = payload.get("status", {}).get("conditions", []) or []
+        accepted = any(
+            item.get("type") == "Accepted" and item.get("status") == "True"
+            for item in conditions
+        )
+        programmed = any(
+            item.get("type") == "Programmed" and item.get("status") == "True"
+            for item in conditions
+        )
+        if accepted and programmed:
+            return
+        time.sleep(5)
+    raise CommandError(
+        f"timed out waiting for Gateway {namespace}/{name} to become ready"
+    )
+
+
 def setup_rhoai(
     plan: ResolvedRunPlan, *, state_path: Path | None = None
 ) -> dict[str, Any]:
@@ -697,27 +789,46 @@ def setup_rhoai(
         label="kserve-controller-manager pods",
     )
 
-    gateway_documents = render_yaml_documents("setup/rhoai/gateway.yaml", {})
-    gatewayclass_document = gateway_documents[0]
-    gateway_document = gateway_documents[1]
-
+    gatewayclass_documents = render_yaml_documents("setup/rhoai/gatewayclass.yaml", {})
+    gatewayclass_document = gatewayclass_documents[0]
     if _gatewayclass_exists(kubectl_cmd):
-        detail(f"GatewayClass {RHOAI_GATEWAYCLASS_NAME} already present")
+        step("Reconciling the RHOAI GatewayClass")
     else:
         step("Creating the RHOAI GatewayClass")
-        _apply_documents(kubectl_cmd, [gatewayclass_document])
         state["gatewayclass_managed"] = True
         _persist_state(state, state_path)
+    _apply_documents(kubectl_cmd, [gatewayclass_document])
+
+    _wait_for_resource(
+        kubectl_cmd,
+        ["get", "gatewayclass", RHOAI_GATEWAYCLASS_NAME, "-o", "name"],
+        timeout_seconds=900,
+        label=f"GatewayClass {RHOAI_GATEWAYCLASS_NAME}",
+    )
+    gateway_documents = render_yaml_documents(
+        "setup/rhoai/gateway.yaml",
+        {
+            "HOSTNAME": _infer_rhoai_gateway_hostname(kubectl_cmd),
+            "TLS_SECRET_NAME": _rhoai_gateway_tls_secret_name(kubectl_cmd),
+        },
+    )
+    gateway_document = gateway_documents[0]
 
     if _gateway_exists(kubectl_cmd):
-        detail(
-            f"Gateway {RHOAI_GATEWAY_NAME} already present in {RHOAI_GATEWAY_NAMESPACE}"
-        )
+        step("Reconciling the RHOAI Gateway")
     else:
         step("Creating the RHOAI Gateway")
-        _apply_documents(kubectl_cmd, [gateway_document])
         state["gateway_managed"] = True
         _persist_state(state, state_path)
+    _apply_documents(kubectl_cmd, [gateway_document])
+
+    step("Waiting for the RHOAI Gateway to become ready")
+    _wait_for_gateway_ready(
+        kubectl_cmd,
+        namespace=RHOAI_GATEWAY_NAMESPACE,
+        name=RHOAI_GATEWAY_NAME,
+        timeout_seconds=900,
+    )
 
     success("RHOAI platform prerequisites are ready")
     return state
