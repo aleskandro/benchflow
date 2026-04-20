@@ -15,6 +15,9 @@ spec:
     - name: CHILD_PIPELINE_NAME
       type: string
       default: benchflow-e2e
+    - name: PARENT_EXECUTION_NAME
+      type: string
+      default: ""
   workspaces:
     - name: target-kubeconfig
       description: Optional kubeconfig for remote target-cluster operations
@@ -39,4 +42,5 @@ spec:
 
           exec bflow task run-experiment-matrix \
             --run-plans-file "${run_plans_path}" \
-            --child-pipeline-name "$(params.CHILD_PIPELINE_NAME)"
+            --child-pipeline-name "$(params.CHILD_PIPELINE_NAME)" \
+            --parent-execution-name "$(params.PARENT_EXECUTION_NAME)"

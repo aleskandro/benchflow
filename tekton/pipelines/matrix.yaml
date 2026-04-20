@@ -33,6 +33,8 @@ spec:
           value: $(params.RUN_PLANS_CONFIGMAP)
         - name: CHILD_PIPELINE_NAME
           value: $(params.CHILD_PIPELINE_NAME)
+        - name: PARENT_EXECUTION_NAME
+          value: $(context.pipelineRun.name)
       workspaces:
         - name: target-kubeconfig
           workspace: target-kubeconfig

@@ -749,6 +749,48 @@ bflow experiment run experiments/smoke/qwen3-06b-matrix-smoke.yaml
 
 The shipped matrix smoke example intentionally produces two child runs.
 
+### Rerunning failed or successful executions
+
+BenchFlow can rerun a previous execution directly from its recorded `RunPlan`
+without going back to the original experiment YAML.
+
+Single execution:
+
+```bash
+bflow experiment run <execution-name> --status failed
+```
+
+Supported status selectors:
+
+- `failed`
+- `succeeded`
+- `all`
+
+Examples:
+
+```bash
+bflow experiment run qwen3-06b-abc123 --status failed
+bflow experiment run qwen3-06b-abc123 --status all
+```
+
+For matrix executions, BenchFlow uses the matrix supervisor execution name and
+reruns only the child executions that match the requested status:
+
+```bash
+bflow experiment run qwen3-06b-matrix-abc123 --status failed
+```
+
+Current limitation:
+
+- matrix rerun-by-status only works for matrix runs created after BenchFlow
+  started labeling child executions with their parent matrix execution
+  identity
+- older matrix runs do not have that linkage, so BenchFlow will fail
+  explicitly instead of guessing which child executions belonged to the
+  matrix
+- `--status` only applies when the positional argument is an execution name;
+  it must not be combined with an experiment file path
+
 ## Dynamic MLflow Defaults
 
 If you do not set `spec.mlflow.experiment`, BenchFlow derives one automatically:

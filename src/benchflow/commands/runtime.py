@@ -984,6 +984,7 @@ def cmd_task_run_experiment_matrix(args: argparse.Namespace) -> int:
     run_matrix_supervisor(
         plans,
         child_execution_name=args.child_pipeline_name,
+        parent_execution_name=args.parent_execution_name or "",
         benchflow_image=os.environ.get("BENCHFLOW_IMAGE"),
     )
     print("completed")
@@ -2121,6 +2122,11 @@ def task_assert_status_command(**kwargs: object) -> int:
     default="benchflow-e2e",
     show_default=True,
     help="Pipeline name to use for the child executions.",
+)
+@click.option(
+    "--parent-execution-name",
+    default="",
+    help="Owning matrix execution name used to label child executions.",
 )
 def task_run_experiment_matrix_command(**kwargs: object) -> int:
     return invoke_handler(cmd_task_run_experiment_matrix, **kwargs)

@@ -38,6 +38,8 @@ from .tekton import TektonOrchestrator
 
 DEFAULT_EXECUTION_NAME = "benchflow-e2e"
 DEFAULT_MATRIX_EXECUTION_NAME = "benchflow-matrix"
+MATRIX_PARENT_EXECUTION_LABEL = "benchflow.io/parent-execution"
+MATRIX_CHILD_INDEX_LABEL = "benchflow.io/matrix-index"
 
 _TEKTON = TektonOrchestrator()
 
@@ -155,6 +157,14 @@ def list_benchflow_executions(
     if not include_completed:
         summaries = [item for item in summaries if not item.get("finished")]
     return summaries
+
+
+def list_execution_payloads(
+    namespace: str,
+    *,
+    label_selector: str = "",
+) -> list[dict[str, Any]]:
+    return _TEKTON.list(namespace, label_selector=label_selector)
 
 
 def _ensure_execution_exists(namespace: str, name: str) -> None:
@@ -357,6 +367,7 @@ def run_matrix_supervisor(
     plans: list[ResolvedRunPlan],
     *,
     child_execution_name: str,
+    parent_execution_name: str = "",
     benchflow_image: str | None = None,
 ) -> list[str]:
     if not plans:
@@ -458,6 +469,11 @@ def run_matrix_supervisor(
                 skip_kueue_reservation=False,
                 benchflow_image=benchflow_image,
             )
+            if parent_execution_name:
+                metadata = manifest.setdefault("metadata", {})
+                labels = metadata.setdefault("labels", {})
+                labels[MATRIX_PARENT_EXECUTION_LABEL] = parent_execution_name
+                labels[MATRIX_CHILD_INDEX_LABEL] = str(index)
             name = submit_execution_manifest(manifest, plan.deployment.namespace)
             submitted[name] = descriptor
             detail(f"Queued execution {name} in namespace {plan.deployment.namespace}")
