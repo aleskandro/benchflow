@@ -164,19 +164,7 @@ def _rhoai_gateway_tls_secret_name(kubectl_cmd: str) -> str:
     )
 
 
-def _catalog_source_for_package(kubectl_cmd: str, package_name: str) -> tuple[str, str]:
-    package = run_json_command(
-        [
-            kubectl_cmd,
-            "get",
-            "packagemanifest",
-            package_name,
-            "-n",
-            "openshift-marketplace",
-            "-o",
-            "json",
-        ]
-    )
+def _package_source(package: dict[str, Any], package_name: str) -> tuple[str, str]:
     status = package.get("status", {})
     source = str(status.get("catalogSource") or "")
     source_namespace = str(status.get("catalogSourceNamespace") or "")
@@ -185,6 +173,27 @@ def _catalog_source_for_package(kubectl_cmd: str, package_name: str) -> tuple[st
             f"packagemanifest/{package_name} does not expose catalog source details"
         )
     return source, source_namespace
+
+
+def _candidate_package_manifests(
+    kubectl_cmd: str, package_name: str
+) -> list[dict[str, Any]]:
+    packages = run_json_command(
+        [
+            kubectl_cmd,
+            "get",
+            "packagemanifest",
+            "-n",
+            "openshift-marketplace",
+            "-o",
+            "json",
+        ]
+    )
+    return [
+        item
+        for item in packages.get("items", []) or []
+        if str(item.get("metadata", {}).get("name") or "") == package_name
+    ]
 
 
 def _operatorgroups_in_namespace(
@@ -271,33 +280,23 @@ def _rhoai_channel(plan: ResolvedRunPlan) -> str:
     return str(plan.deployment.platform_channel or "").strip() or DEFAULT_RHOAI_CHANNEL
 
 
-def _resolve_rhoai_starting_csv(
-    kubectl_cmd: str, requested_version: str, channel_name: str
-) -> str:
-    package = run_json_command(
-        [
-            kubectl_cmd,
-            "get",
-            "packagemanifest",
-            RHOAI_OPERATOR_PACKAGE_NAME,
-            "-n",
-            "openshift-marketplace",
-            "-o",
-            "json",
-        ]
-    )
+def _rhoai_channel_candidates(
+    package: dict[str, Any],
+    *,
+    requested_series: str,
+    requested_ea: str | None,
+    channel_name: str,
+    package_name: str,
+) -> list[tuple[tuple[int, ...], str, str, str]]:
+    source, source_namespace = _package_source(package, package_name)
     channels = package.get("status", {}).get("channels", []) or []
-    requested_series, requested_ea = _requested_rhoai_version(requested_version)
     channel = next(
         (item for item in channels if item.get("name") == channel_name), None
     )
     if not isinstance(channel, dict):
-        raise CommandError(
-            f"packagemanifest/{RHOAI_OPERATOR_PACKAGE_NAME} does not expose channel {channel_name}"
-        )
+        return []
 
-    entries = channel.get("entries", []) or []
-    candidates: list[tuple[tuple[int, ...], str]] = []
+    candidates: list[tuple[tuple[int, ...], str, str, str]] = []
     current_csv = str(channel.get("currentCSV") or "")
     current_version = str(
         (channel.get("currentCSVDesc", {}) or {}).get("version") or ""
@@ -312,8 +311,11 @@ def _resolve_rhoai_starting_csv(
         if normalized_ea == requested_ea:
             version_tuple = _parse_version_tuple(current_version)
             if version_tuple:
-                candidates.append((version_tuple, current_csv))
-    for entry in entries:
+                candidates.append(
+                    (version_tuple, current_csv, source, source_namespace)
+                )
+
+    for entry in channel.get("entries", []) or []:
         if not isinstance(entry, dict):
             continue
         version = str(entry.get("version") or "")
@@ -331,7 +333,42 @@ def _resolve_rhoai_starting_csv(
         version_tuple = _parse_version_tuple(version)
         if not version_tuple or not name:
             continue
-        candidates.append((version_tuple, name))
+        candidates.append((version_tuple, name, source, source_namespace))
+    return candidates
+
+
+def _resolve_rhoai_operator_package(
+    kubectl_cmd: str, requested_version: str, channel_name: str
+) -> tuple[str, str, str]:
+    requested_series, requested_ea = _requested_rhoai_version(requested_version)
+    packages = _candidate_package_manifests(kubectl_cmd, RHOAI_OPERATOR_PACKAGE_NAME)
+    if not packages:
+        raise CommandError(
+            f"packagemanifest/{RHOAI_OPERATOR_PACKAGE_NAME} was not found"
+        )
+
+    candidates: list[tuple[tuple[int, ...], str, str, str]] = []
+    packages_with_channel = 0
+    for package in packages:
+        package_candidates = _rhoai_channel_candidates(
+            package,
+            requested_series=requested_series,
+            requested_ea=requested_ea,
+            channel_name=channel_name,
+            package_name=RHOAI_OPERATOR_PACKAGE_NAME,
+        )
+        if package_candidates:
+            packages_with_channel += 1
+            candidates.extend(package_candidates)
+            continue
+        channels = package.get("status", {}).get("channels", []) or []
+        if any(item.get("name") == channel_name for item in channels):
+            packages_with_channel += 1
+
+    if packages_with_channel == 0:
+        raise CommandError(
+            f"packagemanifest/{RHOAI_OPERATOR_PACKAGE_NAME} does not expose channel {channel_name}"
+        )
 
     if not candidates:
         raise CommandError(
@@ -340,7 +377,8 @@ def _resolve_rhoai_starting_csv(
         )
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    _, starting_csv, source, source_namespace = candidates[0]
+    return source, source_namespace, starting_csv
 
 
 def rhoai_platform_present(kubectl_cmd: str) -> bool:
@@ -691,14 +729,11 @@ def setup_rhoai(
             kubectl_cmd, RHOAI_OPERATOR_NAMESPACE
         )
         _persist_state(state, state_path)
-        source, source_namespace = _catalog_source_for_package(
-            kubectl_cmd, RHOAI_OPERATOR_PACKAGE_NAME
-        )
-        starting_csv = _resolve_rhoai_starting_csv(
+        source, source_namespace, starting_csv = _resolve_rhoai_operator_package(
             kubectl_cmd, requested_version, channel_name
         )
         detail(
-            f"Installing {RHOAI_OPERATOR_PACKAGE_NAME} from {channel_name} "
+            f"Installing {RHOAI_OPERATOR_PACKAGE_NAME} from {source}/{channel_name} "
             f"with startingCSV {starting_csv}"
         )
         documents = render_yaml_documents(
