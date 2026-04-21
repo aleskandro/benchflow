@@ -34,6 +34,7 @@ from ..models import (
     OverrideScaleSpec,
     OverrideSpec,
     ProfilingSpec,
+    RuntimeResourcesSpec,
     StageSpec,
     ValidationError,
     normalize_model_names,
@@ -220,6 +221,30 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
     )
     cli_env = parse_mapping(getattr(args, "env", None), "--env")
     cli_vllm_args = [str(item) for item in (getattr(args, "vllm_arg", None) or [])]
+    runtime_resources = base_experiment.spec.overrides.runtime.resources
+    runtime_cpu_request = getattr(args, "runtime_cpu_request", None)
+    runtime_cpu_limit = getattr(args, "runtime_cpu_limit", None)
+    if runtime_cpu_request is not None or runtime_cpu_limit is not None:
+        runtime_resources = RuntimeResourcesSpec(
+            requests=(
+                dict(runtime_resources.requests)
+                if runtime_resources is not None
+                else {}
+            ),
+            limits=(
+                dict(runtime_resources.limits) if runtime_resources is not None else {}
+            ),
+        )
+        if runtime_cpu_request is not None:
+            cpu_request = str(runtime_cpu_request).strip()
+            if not cpu_request:
+                raise ValidationError("--runtime-cpu-request must not be empty")
+            runtime_resources.requests["cpu"] = cpu_request
+        if runtime_cpu_limit is not None:
+            cpu_limit = str(runtime_cpu_limit).strip()
+            if not cpu_limit:
+                raise ValidationError("--runtime-cpu-limit must not be empty")
+            runtime_resources.limits["cpu"] = cpu_limit
     target_kubeconfig = getattr(args, "target_kubeconfig", None)
     if target_kubeconfig:
         target_kubeconfig = str(Path(target_kubeconfig).resolve())
@@ -319,6 +344,7 @@ def experiment_from_args(args: argparse.Namespace) -> Experiment:
                 if base_experiment.spec.overrides.runtime.tolerations is not None
                 else None
             ),
+            resources=runtime_resources,
         ),
         benchmark=OverrideBenchmarkSpec(
             rates=(
@@ -593,6 +619,14 @@ def experiment_input_options(func: Callable[..., object]) -> Callable[..., objec
             multiple=True,
             metavar="KEY=VALUE",
             help="Runtime environment override. Repeat to set multiple variables.",
+        ),
+        click.option(
+            "--runtime-cpu-request",
+            help="Override runtime pod CPU request, for example 16 or 16000m.",
+        ),
+        click.option(
+            "--runtime-cpu-limit",
+            help="Override runtime pod CPU limit, for example 32 or 32000m.",
         ),
         click.option(
             "--llmd-repo-ref",

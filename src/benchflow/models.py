@@ -241,6 +241,7 @@ class OverrideRuntimeSpec:
     node_selector: dict[str, str] | None = None
     affinity: dict[str, Any] | None = None
     tolerations: list[dict[str, Any]] | None = None
+    resources: "RuntimeResourcesSpec | None" = None
 
 
 @dataclass(slots=True)
@@ -298,6 +299,12 @@ class Experiment:
 
 
 @dataclass(slots=True)
+class RuntimeResourcesSpec:
+    requests: dict[str, str] = field(default_factory=dict)
+    limits: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RuntimeSpec:
     image: str = ""
     replicas: int = 1
@@ -307,6 +314,7 @@ class RuntimeSpec:
     node_selector: dict[str, str] = field(default_factory=dict)
     affinity: dict[str, Any] = field(default_factory=dict)
     tolerations: list[dict[str, Any]] = field(default_factory=list)
+    resources: RuntimeResourcesSpec = field(default_factory=RuntimeResourcesSpec)
 
 
 @dataclass(slots=True)

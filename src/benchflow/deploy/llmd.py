@@ -115,6 +115,18 @@ def _ensure_container(values: dict[str, Any]) -> dict[str, Any]:
     return containers[0]
 
 
+def _apply_runtime_resources(container: dict[str, Any], plan: ResolvedRunPlan) -> None:
+    runtime_resources = plan.deployment.runtime.resources
+    if not runtime_resources.requests and not runtime_resources.limits:
+        return
+
+    resources = container.setdefault("resources", {})
+    requests = resources.setdefault("requests", {})
+    limits = resources.setdefault("limits", {})
+    requests.update(runtime_resources.requests)
+    limits.update(runtime_resources.limits)
+
+
 def _release_match_labels(release_name: str) -> dict[str, str]:
     return {
         _LLMD_INFERENCE_SERVING_LABEL: "true",
@@ -205,6 +217,7 @@ def _patch_values(plan: ResolvedRunPlan, values_file: Path) -> dict[str, Any]:
 
     if runtime.image:
         container["image"] = runtime.image
+    _apply_runtime_resources(container, plan)
     if plan.deployment.mode == "precise-prefix-cache":
         existing_args = list(container.get("args") or [])
         kv_events_config: dict[str, Any] | None = None

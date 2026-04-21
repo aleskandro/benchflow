@@ -143,10 +143,12 @@ spec:
           - -m
           - vllm.entrypoints.openai.api_server
         resources:
-          limits:
-            nvidia.com/gpu: {{ gpu_count | tojson }}
-          requests:
-            nvidia.com/gpu: {{ gpu_count | tojson }}
+{% for resource_type, resource_values in runtime_resources.items() %}
+          {{ resource_type }}:
+{% for resource_name, resource_value in resource_values.items() %}
+            {{ resource_name | tojson }}: {{ resource_value | tojson }}
+{% endfor %}
+{% endfor %}
         livenessProbe:
           httpGet:
             path: /health

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from itertools import product
 
 from .loaders import ProfileCatalog
@@ -235,6 +236,12 @@ def expand_experiment_matrix(experiment: Experiment) -> list[Experiment]:
                             tolerations=(
                                 list(experiment.spec.overrides.runtime.tolerations)
                                 if experiment.spec.overrides.runtime.tolerations
+                                is not None
+                                else None
+                            ),
+                            resources=(
+                                deepcopy(experiment.spec.overrides.runtime.resources)
+                                if experiment.spec.overrides.runtime.resources
                                 is not None
                                 else None
                             ),

@@ -31,6 +31,7 @@ from .models import (
     ProfileRefs,
     ResolvedDeployment,
     ResolvedRunPlan,
+    RuntimeResourcesSpec,
     RuntimeSpec,
     StageSpec,
     TargetSpec,
@@ -160,6 +161,32 @@ def _mapping(raw: Any, field_name: str) -> dict[str, Any]:
     return dict(raw)
 
 
+def _resource_mapping(raw: Any, field_name: str) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValidationError(f"{field_name} must be a mapping")
+    values: dict[str, str] = {}
+    for key, value in raw.items():
+        cleaned_key = str(key).strip()
+        cleaned_value = str(value).strip()
+        if cleaned_key and cleaned_value:
+            values[cleaned_key] = cleaned_value
+    return values
+
+
+def _runtime_resources_from_dict(
+    raw: dict[str, Any] | None, field_name: str
+) -> RuntimeResourcesSpec:
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ValidationError(f"{field_name} must be a mapping")
+    return RuntimeResourcesSpec(
+        requests=_resource_mapping(raw.get("requests"), f"{field_name}.requests"),
+        limits=_resource_mapping(raw.get("limits"), f"{field_name}.limits"),
+    )
+
+
 def _mapping_list(raw: Any, field_name: str) -> list[dict[str, Any]]:
     if raw is None:
         return []
@@ -225,6 +252,13 @@ def _overrides_from_dict(raw: dict[str, Any] | None) -> OverrideSpec:
                     "spec.overrides.runtime.tolerations",
                 )
                 if "tolerations" in runtime
+                else None
+            ),
+            resources=(
+                _runtime_resources_from_dict(
+                    runtime.get("resources"), "spec.overrides.runtime.resources"
+                )
+                if "resources" in runtime
                 else None
             ),
         ),
@@ -322,6 +356,9 @@ def _runtime_from_dict(raw: dict[str, Any] | None) -> RuntimeSpec:
         ),
         affinity=_mapping(raw.get("affinity"), "spec.runtime.affinity"),
         tolerations=_mapping_list(raw.get("tolerations"), "spec.runtime.tolerations"),
+        resources=_runtime_resources_from_dict(
+            raw.get("resources"), "spec.runtime.resources"
+        ),
     )
 
 

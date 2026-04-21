@@ -10,6 +10,7 @@ from .models import (
     ProfileRefs,
     ResolvedDeployment,
     ResolvedRunPlan,
+    RuntimeResourcesSpec,
     RuntimeSpec,
     StageSpec,
     TargetSpec,
@@ -196,6 +197,17 @@ def _resolve_vllm_args(
     return resolved_args
 
 
+def _resolve_runtime_resources(
+    profile: RuntimeResourcesSpec, override: RuntimeResourcesSpec | None
+) -> RuntimeResourcesSpec:
+    if override is None:
+        return deepcopy(profile)
+    return RuntimeResourcesSpec(
+        requests={**profile.requests, **override.requests},
+        limits={**profile.limits, **override.limits},
+    )
+
+
 def resolve_run_plan(
     experiment: Experiment, catalog: ProfileCatalog
 ) -> ResolvedRunPlan:
@@ -279,6 +291,12 @@ def resolve_run_plan(
             deepcopy(experiment.spec.overrides.runtime.tolerations)
             if experiment.spec.overrides.runtime.tolerations is not None
             else deepcopy(deployment_profile.spec.runtime.tolerations)
+        ),
+        resources=(
+            _resolve_runtime_resources(
+                deployment_profile.spec.runtime.resources,
+                experiment.spec.overrides.runtime.resources,
+            )
         ),
     )
     _validate_profiling_support(

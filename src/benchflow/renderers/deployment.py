@@ -58,9 +58,24 @@ def render_llmd_values(plan: ResolvedRunPlan) -> dict[str, Any]:
             "nodeSelector": plan.deployment.runtime.node_selector,
             "affinity": plan.deployment.runtime.affinity,
             "tolerations": plan.deployment.runtime.tolerations,
+            "resources": plan.deployment.runtime.resources,
         },
         "options": plan.deployment.options,
     }
+
+
+def _runtime_resource_requirements(
+    plan: ResolvedRunPlan, *, include_gpu: bool
+) -> dict[str, dict[str, str]]:
+    resources = {
+        "limits": dict(plan.deployment.runtime.resources.limits),
+        "requests": dict(plan.deployment.runtime.resources.requests),
+    }
+    if include_gpu:
+        gpu_count = str(plan.deployment.runtime.tensor_parallelism)
+        resources["limits"]["nvidia.com/gpu"] = gpu_count
+        resources["requests"]["nvidia.com/gpu"] = gpu_count
+    return resources
 
 
 def _rhoai_runtime_env(plan: ResolvedRunPlan) -> list[dict[str, Any]]:
@@ -105,6 +120,7 @@ def _rhoai_template_context(plan: ResolvedRunPlan) -> dict[str, Any]:
         "runtime_node_selector": plan.deployment.runtime.node_selector,
         "runtime_affinity": plan.deployment.runtime.affinity,
         "runtime_tolerations": plan.deployment.runtime.tolerations,
+        "runtime_resources": _runtime_resource_requirements(plan, include_gpu=True),
         "gpu_count": str(plan.deployment.runtime.tensor_parallelism),
         "custom_scheduler_enabled": custom_scheduler_enabled,
         "approximate_prefix_cache_enabled": (
@@ -220,14 +236,7 @@ def render_rhaiis_raw_vllm_manifests(plan: ResolvedRunPlan) -> list[dict[str, An
         ],
         "env": _rhaiis_raw_vllm_runtime_env(plan),
         "ports": [{"containerPort": 8000, "name": "http", "protocol": "TCP"}],
-        "resources": {
-            "limits": {
-                "nvidia.com/gpu": str(plan.deployment.runtime.tensor_parallelism)
-            },
-            "requests": {
-                "nvidia.com/gpu": str(plan.deployment.runtime.tensor_parallelism)
-            },
-        },
+        "resources": _runtime_resource_requirements(plan, include_gpu=True),
         "volumeMounts": [
             {
                 "name": "model-storage",
