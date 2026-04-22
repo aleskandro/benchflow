@@ -106,6 +106,9 @@ def _parse_request_profile(requests_data: Any) -> Dict[str, Any]:
     if parsed_dict:
         return parsed_dict
 
+    if isinstance(data_str, dict):
+        return data_str
+
     parsed: Dict[str, Any] = {}
     if not data_str:
         return parsed
